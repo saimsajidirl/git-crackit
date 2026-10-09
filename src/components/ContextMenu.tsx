@@ -96,7 +96,7 @@ export function Dropdown({
   if (!open) return null;
   return (
     <div
-      className="dropdown"
+      className={align === "right" ? "dropdown align-right" : "dropdown"}
       ref={ref}
       style={{ [align === "right" ? "right" : "left"]: 0, width }}
     >

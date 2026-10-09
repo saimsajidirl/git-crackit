@@ -1,12 +1,13 @@
-import React, { useMemo, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CommitInfo } from "../types";
 import { Icon } from "../icons";
 import { Avatar } from "./Avatar";
 import { cx, timeAgo } from "../util";
+import { useVirtual } from "../useVirtual";
 
 const LANE_W = 14;
-const ROW_H = 34;
-const LANE_COLORS = ["#0969da", "#1a7f37", "#bf3989", "#bc4c00", "#8250df", "#0a7ea4", "#9a6700", "#cf222e", "#57606a"];
+const ROW_H = 40;
+const LANE_COLORS = ["#7b6cff", "#3fc8ff", "#3ddc97", "#ff5f7e", "#ffad5c", "#c48bff", "#f2cc60", "#2dd4bf", "#f472b6"];
 
 interface RowGraph {
   lane: number;
@@ -51,7 +52,7 @@ function computeGraph(commits: CommitInfo[]): RowGraph[] {
   return rows;
 }
 
-function GraphCell({ g, isHead }: { g: RowGraph; isHead: boolean }) {
+const GraphCell = memo(function GraphCell({ g, isHead }: { g: RowGraph; isHead: boolean }) {
   const w = Math.max(g.laneCount * LANE_W + 8, 22);
   const cx = (l: number) => l * LANE_W + 8;
   const mid = ROW_H / 2;
@@ -63,9 +64,9 @@ function GraphCell({ g, isHead }: { g: RowGraph; isHead: boolean }) {
     const a = g.above[j] || j === g.lane;
     const b = g.below[j];
     const c = LANE_COLORS[j % LANE_COLORS.length];
-    if (a && b) segs.push(<line key={`v${j}`} x1={cx(j)} y1={0} x2={cx(j)} y2={ROW_H} stroke={c} strokeWidth={1.6} />);
-    else if (a) segs.push(<line key={`v${j}`} x1={cx(j)} y1={0} x2={cx(j)} y2={mid} stroke={c} strokeWidth={1.6} />);
-    else if (b) segs.push(<line key={`v${j}`} x1={cx(j)} y1={mid} x2={cx(j)} y2={ROW_H} stroke={c} strokeWidth={1.6} />);
+    if (a && b) segs.push(<line key={`v${j}`} x1={cx(j)} y1={0} x2={cx(j)} y2={ROW_H} stroke={c} strokeWidth={2} />);
+    else if (a) segs.push(<line key={`v${j}`} x1={cx(j)} y1={0} x2={cx(j)} y2={mid} stroke={c} strokeWidth={2} />);
+    else if (b) segs.push(<line key={`v${j}`} x1={cx(j)} y1={mid} x2={cx(j)} y2={ROW_H} stroke={c} strokeWidth={2} />);
   }
   for (const [f, t] of g.edges) {
     if (f === t) continue;
@@ -74,7 +75,7 @@ function GraphCell({ g, isHead }: { g: RowGraph; isHead: boolean }) {
         key={`e${f}-${t}`}
         d={`M ${cx(f)} ${mid} C ${cx(f)} ${ROW_H}, ${cx(t)} ${mid}, ${cx(t)} ${ROW_H}`}
         stroke={LANE_COLORS[t % LANE_COLORS.length]}
-        strokeWidth={1.6}
+        strokeWidth={2}
         fill="none"
       />
     );
@@ -82,10 +83,11 @@ function GraphCell({ g, isHead }: { g: RowGraph; isHead: boolean }) {
   return (
     <svg width={w} height={ROW_H} className="graph-cell" aria-hidden>
       {segs}
-      <circle cx={cx(g.lane)} cy={mid} r={isHead ? 4.6 : 3.6} fill={color} stroke="#fff" strokeWidth={1.4} />
+      {isHead && <circle cx={cx(g.lane)} cy={mid} r={7.5} fill={color} opacity={0.22} />}
+      <circle className="graph-node" cx={cx(g.lane)} cy={mid} r={isHead ? 5 : 4} fill={color} strokeWidth={2} />
     </svg>
   );
-}
+});
 
 function refBadge(kind: string, name: string, isHeadRef: boolean) {
   const cls = kind === "tag" ? "tag-badge" : kind === "remote" ? "remote-badge" : "branch-badge";
@@ -98,6 +100,36 @@ function refBadge(kind: string, name: string, isHeadRef: boolean) {
   );
 }
 
+const CommitRow = memo(function CommitRow({
+  c, g, selected, isHead, onSelect, onContextMenu,
+}: {
+  c: CommitInfo; g: RowGraph; selected: boolean; isHead: boolean;
+  onSelect: (oid: string) => void; onContextMenu: (e: React.MouseEvent, c: CommitInfo) => void;
+}) {
+  return (
+    <div
+      className={cx("commit-row", selected && "selected")}
+      style={{ height: ROW_H }}
+      onClick={() => onSelect(c.oid)}
+      onContextMenu={(e) => onContextMenu(e, c)}
+    >
+      <GraphCell g={g} isHead={isHead} />
+      <Avatar name={c.author_name} email={c.author_email} size={22} />
+      <div className="commit-main">
+        <div className="commit-summary" title={c.summary}>
+          {c.refs.map((r) => refBadge(r.kind, r.name, isHead))}
+          <span>{c.summary || "(no message)"}</span>
+        </div>
+        <div className="commit-meta">
+          <span className="author">{c.author_name}</span>
+          <span className="sha">{c.short_id}</span>
+          <span>{timeAgo(c.author_time)}</span>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export function HistoryPanel({
   commits,
   selectedOid,
@@ -107,7 +139,6 @@ export function HistoryPanel({
   onSearch,
   onLoadMore,
   hasMore,
-  loading,
 }: {
   commits: CommitInfo[];
   selectedOid: string | null;
@@ -115,69 +146,74 @@ export function HistoryPanel({
   onSelect: (oid: string) => void;
   onContextMenu: (e: React.MouseEvent, c: CommitInfo) => void;
   onSearch: (q: string) => void;
-  onLoadMore: () => void;
+  onLoadMore: () => Promise<void> | void;
   hasMore: boolean;
-  loading: boolean;
 }) {
   const [query, setQuery] = useState("");
   const graph = useMemo(() => computeGraph(commits), [commits]);
-  const maxLanes = useMemo(() => Math.max(1, ...graph.map((g) => g.laneCount)), [graph]);
+  const maxLanes = useMemo(() => graph.reduce((m, g) => Math.max(m, g.laneCount), 1), [graph]);
   const graphW = maxLanes * LANE_W + 8;
+  const { ref, start, end, padTop, padBottom } = useVirtual(commits.length, ROW_H, 10);
+
+  // Stable callbacks so memoized rows don't re-render when the parent re-renders.
+  const ctxRef = useRef(onContextMenu);
+  ctxRef.current = onContextMenu;
+  const onCtx = useCallback((e: React.MouseEvent, c: CommitInfo) => ctxRef.current(e, c), []);
+  const selRef = useRef(onSelect);
+  selRef.current = onSelect;
+  const onSel = useCallback((oid: string) => selRef.current(oid), []);
+
+  const searchTimer = useRef<number>();
+  const onQuery = (q: string) => {
+    setQuery(q);
+    window.clearTimeout(searchTimer.current);
+    searchTimer.current = window.setTimeout(() => onSearch(q), 160);
+  };
+  useEffect(() => () => window.clearTimeout(searchTimer.current), []);
+
+  const loadingMore = useRef(false);
+  useEffect(() => {
+    if (!hasMore || loadingMore.current || commits.length === 0 || end < commits.length - 30) return;
+    loadingMore.current = true;
+    Promise.resolve(onLoadMore()).finally(() => { loadingMore.current = false; });
+  }, [end, commits.length, hasMore, onLoadMore]);
 
   return (
     <div className="history-panel">
-      <div className="panel-header">
-        <span className="panel-title">History</span>
-      </div>
       <div className="search-wrap">
         <Icon name="search" size={14} className="search-icon" />
         <input
           className="input search"
           placeholder="Search commits, authors, SHA…"
           value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            onSearch(e.target.value);
-          }}
+          onChange={(e) => onQuery(e.target.value)}
         />
       </div>
-      <div className="commit-list" style={{ ["--graphw" as string]: `${graphW}px` }}>
-        {commits.map((c, i) => {
-          const g = graph[i];
+      <div className="commit-list" ref={ref} style={{ ["--graphw" as string]: `${graphW}px` }}>
+        {padTop > 0 && <div style={{ height: padTop }} />}
+        {commits.slice(start, end).map((c, k) => {
+          const i = start + k;
           return (
-            <div
+            <CommitRow
               key={c.oid}
-              className={cx("commit-row", selectedOid === c.oid && "selected")}
-              style={{ height: ROW_H }}
-              onClick={() => onSelect(c.oid)}
-              onContextMenu={(e) => onContextMenu(e, c)}
-            >
-              <GraphCell g={g} isHead={c.oid === headOid} />
-              <Avatar name={c.author_name} email={c.author_email} size={22} />
-              <div className="commit-main">
-                <div className="commit-summary" title={c.summary}>
-                  {c.refs.map((r) => refBadge(r.kind, r.name, c.oid === headOid))}
-                  <span>{c.summary || "(no message)"}</span>
-                </div>
-                <div className="commit-meta">
-                  <span className="muted">{c.author_name}</span>
-                  <span className="sha">{c.short_id}</span>
-                  <span className="muted">{timeAgo(c.author_time)}</span>
-                </div>
-              </div>
-            </div>
+              c={c}
+              g={graph[i]}
+              selected={selectedOid === c.oid}
+              isHead={c.oid === headOid}
+              onSelect={onSel}
+              onContextMenu={onCtx}
+            />
           );
         })}
-        {commits.length === 0 && !loading && (
+        {padBottom > 0 && <div style={{ height: padBottom }} />}
+        {commits.length === 0 && (
           <div className="list-empty">
-            <Icon name="history" size={28} />
-            <p>No commits yet</p>
+            <span className="empty-icon"><Icon name="history" size={22} /></span>
+            <p>{query ? "No matching commits" : "No commits yet"}</p>
           </div>
         )}
-        {hasMore && (
-          <button className="link-btn load-more" onClick={onLoadMore} disabled={loading}>
-            {loading ? "Loading…" : "Load more commits"}
-          </button>
+        {hasMore && commits.length > 0 && (
+          <div className="load-more"><Icon name="sync" size={12} className="spin" /> Loading more commits…</div>
         )}
       </div>
     </div>

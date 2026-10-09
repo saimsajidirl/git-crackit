@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import type { RepoInfo, BranchInfo } from "../types";
 import { Icon } from "../icons";
 import { Dropdown } from "./ContextMenu";
-import { timeAgo } from "../util";
+import { cx, modKey, timeAgo, type Theme } from "../util";
 
 export interface ToolbarProps {
   repo: RepoInfo | null;
@@ -30,23 +30,31 @@ export interface ToolbarProps {
   onBranchContext: (e: React.MouseEvent, b: BranchInfo) => void;
   onFetchAll: () => void;
   onSubmodules: () => void;
+  theme: Theme;
+  onToggleTheme: () => void;
+  onCommandPalette: () => void;
 }
 
 function ToolbarButton({
-  icon, title, subtitle, onClick, children, dropdown, onDropdown, disabled,
+  icon, title, label, subtitle, onClick, children, dropdown, onDropdown, disabled, open, variant, spinning, extra,
 }: {
-  icon: string; title: string; subtitle?: string; onClick?: () => void;
+  icon: string; title: string; label?: string; subtitle?: string; onClick?: () => void;
   children?: React.ReactNode; dropdown?: boolean; onDropdown?: () => void; disabled?: boolean;
+  open?: boolean; variant?: "accent"; spinning?: boolean; extra?: React.ReactNode;
 }) {
   return (
     <div className="toolbar-button-wrap">
-      <button className="toolbar-button" onClick={onClick ?? onDropdown} disabled={disabled}>
-        <Icon name={icon} size={16} />
-        <span className="tb-text">
-          <span className="tb-title">{title}</span>
-          {subtitle && <span className="tb-subtitle">{subtitle}</span>}
-        </span>
-        {dropdown && <Icon name="chevronDown" size={12} />}
+      <button className={cx("toolbar-button", open && "open", variant)} onClick={onClick ?? onDropdown} disabled={disabled}>
+        <Icon name={icon} size={16} className={spinning ? "spin" : undefined} />
+        {(title || subtitle) && (
+          <span className="tb-text">
+            {label && <span className="tb-label">{label}</span>}
+            <span className="tb-title">{title}</span>
+            {subtitle && <span className="tb-subtitle">{subtitle}</span>}
+          </span>
+        )}
+        {extra}
+        {dropdown && <Icon name="chevronDown" size={12} className="chev" />}
       </button>
       {children}
     </div>
@@ -76,11 +84,11 @@ export function Toolbar(p: ToolbarProps) {
       fetchAction = p.onPush;
     } else if (behind > 0) {
       fetchTitle = `Pull origin`;
-      fetchSub = `↓${behind}${ahead > 0 ? ` ↑${ahead}` : ""}`;
+      fetchSub = undefined;
       fetchAction = p.onPull;
     } else if (ahead > 0) {
       fetchTitle = `Push origin`;
-      fetchSub = `↑${ahead}`;
+      fetchSub = undefined;
       fetchAction = p.onPush;
     } else {
       fetchSub = repo.upstream ? "up to date" : undefined;
@@ -92,7 +100,10 @@ export function Toolbar(p: ToolbarProps) {
 
   return (
     <div className="toolbar">
-      <ToolbarButton icon="repo" title={repo ? repo.name : "No repository"} subtitle={repo ? "Current repository" : "Open a repository"} dropdown onDropdown={() => toggle("repo")}>
+      <span className="brand-mark" title="Git Crackit">
+        <Icon name="branch" size={15} />
+      </span>
+      <ToolbarButton icon="repo" label={repo ? "Repository" : undefined} title={repo ? repo.name : "No repository"} subtitle={repo ? undefined : "Open a repository"} dropdown open={openMenu === "repo"} onDropdown={() => toggle("repo")}>
         <Dropdown open={openMenu === "repo"} onClose={close} width={280}>
           <div className="dropdown-section">Recent repositories</div>
           {p.recent.length === 0 && <div className="dropdown-empty">No recent repositories</div>}
@@ -136,17 +147,11 @@ export function Toolbar(p: ToolbarProps) {
       {repo && (
         <>
           <ToolbarButton
-            icon="sync"
-            title={p.busy ?? fetchTitle}
-            subtitle={fetchSub}
-            onClick={fetchAction}
-          />
-
-          <ToolbarButton
             icon="branch"
+            label="Branch"
             title={repo.is_detached ? `HEAD @ ${repo.head}` : repo.head ?? "no branch"}
-            subtitle="Current branch"
             dropdown
+            open={openMenu === "branch"}
             onDropdown={() => toggle("branch")}
           >
             <Dropdown open={openMenu === "branch"} onClose={close} width={320}>
@@ -185,7 +190,26 @@ export function Toolbar(p: ToolbarProps) {
             </Dropdown>
           </ToolbarButton>
 
-          <ToolbarButton icon="merge" title="Branch" subtitle="Actions" dropdown onDropdown={() => toggle("actions")}>
+          <div className="toolbar-divider" />
+
+          <ToolbarButton
+            icon="sync"
+            title={p.busy ?? fetchTitle}
+            subtitle={p.busy ? undefined : fetchSub}
+            onClick={fetchAction}
+            variant={ahead > 0 || behind > 0 ? "accent" : undefined}
+            spinning={!!p.busy}
+            extra={
+              !p.busy && (ahead > 0 || behind > 0) ? (
+                <span className="tb-counters">
+                  {behind > 0 && <span className="counter down"><Icon name="arrowDown" size={10} />{behind}</span>}
+                  {ahead > 0 && <span className="counter up"><Icon name="arrowUp" size={10} />{ahead}</span>}
+                </span>
+              ) : undefined
+            }
+          />
+
+          <ToolbarButton icon="merge" title="Actions" dropdown open={openMenu === "actions"} onDropdown={() => toggle("actions")}>
             <Dropdown open={openMenu === "actions"} onClose={close} width={240}>
               <button className="menu-item" onClick={() => { close(); p.onNewBranch(); }}>
                 <Icon name="plus" size={14} /> New branch…
@@ -208,7 +232,13 @@ export function Toolbar(p: ToolbarProps) {
 
           <div className="toolbar-spacer" />
 
-          <ToolbarButton icon="gear" title="Repository" dropdown onDropdown={() => toggle("repo-menu")}>
+          <button className="cmdk-trigger" onClick={p.onCommandPalette} title="Command palette">
+            <Icon name="search" size={13} />
+            <span className="grow">Search or run a command…</span>
+            <kbd>{modKey}</kbd><kbd>K</kbd>
+          </button>
+
+          <ToolbarButton icon="gear" title="" dropdown open={openMenu === "repo-menu"} onDropdown={() => toggle("repo-menu")}>
             <Dropdown open={openMenu === "repo-menu"} onClose={close} align="right" width={240}>
               <button className="menu-item" onClick={() => { close(); p.onFetch(); }}>
                 <Icon name="sync" size={14} /> Fetch
@@ -233,6 +263,17 @@ export function Toolbar(p: ToolbarProps) {
           </ToolbarButton>
         </>
       )}
+      {!repo && <div className="toolbar-spacer" />}
+      <div className="toolbar-button-wrap">
+        <button
+          className="toolbar-button icon-only"
+          onClick={p.onToggleTheme}
+          title={p.theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+        >
+          <Icon name={p.theme === "dark" ? "sun" : "moon"} size={16} />
+        </button>
+      </div>
+      <div className={cx("busy-bar", p.busy && "on")} />
     </div>
   );
 }

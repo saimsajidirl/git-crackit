@@ -3,7 +3,7 @@ import type { CommitDetail, FileDiff } from "../types";
 import { api } from "../api";
 import { Icon } from "../icons";
 import { Avatar } from "./Avatar";
-import { DiffView } from "./DiffView";
+import { DiffView, DiffEmpty } from "./DiffView";
 import { cx, fileName, dirName, formatDate, statusLetter } from "../util";
 
 export function CommitDetailView({
@@ -27,12 +27,7 @@ export function CommitDetailView({
   }, [detail?.commit.oid]);
 
   if (!detail) {
-    return (
-      <div className="diff-empty">
-        <Icon name="history" size={32} />
-        <p>Select a commit to view its details</p>
-      </div>
-    );
+    return <DiffEmpty icon="history" title="Select a commit to view its details" />;
   }
 
   const c = detail.commit;
@@ -43,24 +38,33 @@ export function CommitDetailView({
     <div className="commit-detail">
       <div className="commit-detail-header">
         <div className="cdh-top">
-          <Avatar name={c.author_name} email={c.author_email} size={36} />
+          <Avatar name={c.author_name} email={c.author_email} size={40} />
           <div className="cdh-text">
             <div className="cdh-summary">{c.summary}</div>
-            <div className="cdh-meta muted">
-              {c.author_name} committed {formatDate(c.author_time)} · <span className="sha">{c.oid}</span>
+            <div className="cdh-meta">
+              <span><b style={{ color: "var(--text)", fontWeight: 600 }}>{c.author_name}</b> committed {formatDate(c.author_time)}</span>
             </div>
-            {c.parents.length > 0 && (
-              <div className="cdh-meta muted">
-                {c.parents.length} parent{c.parents.length > 1 ? "s" : ""}: {c.parents.map((p) => p.slice(0, 7)).join(", ")}
-              </div>
-            )}
+            <div className="cdh-meta">
+              <button className="meta-chip mono" title="Copy full SHA" onClick={() => navigator.clipboard.writeText(c.oid)}>
+                <Icon name="copy" size={11} /> {c.oid.slice(0, 10)}
+              </button>
+              {c.parents.length > 0 && (
+                <span className="meta-chip mono" title={c.parents.join("\n")}>
+                  <Icon name="merge" size={11} /> {c.parents.map((p) => p.slice(0, 7)).join(" · ")}
+                </span>
+              )}
+              <span className="meta-chip">
+                <span className="stat-add">+{totalAdd}</span>
+                <span className="stat-del">−{totalDel}</span>
+              </span>
+            </div>
           </div>
         </div>
         {c.body && <pre className="cdh-body">{c.body}</pre>}
       </div>
       <div className="commit-detail-body">
         <div className="commit-files">
-          <div className="files-header muted">
+          <div className="files-header">
             {detail.files.length} file{detail.files.length === 1 ? "" : "s"} changed
             <span className="diff-stats">
               <span className="stat-add">+{totalAdd}</span>

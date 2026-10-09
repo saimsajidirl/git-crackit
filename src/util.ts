@@ -18,8 +18,8 @@ export function formatDate(ts: number): string {
 }
 
 const PALETTE = [
-  "#0969da", "#8250df", "#bf3989", "#cf222e", "#bc4c00",
-  "#1a7f37", "#0a7ea4", "#6e7781", "#9a6700", "#57606a",
+  "#6d5efc", "#a855f7", "#ec4899", "#f43f5e", "#f97316",
+  "#10b981", "#0ea5e9", "#14b8a6", "#eab308", "#6366f1",
 ];
 
 export function colorFor(str: string): string {
@@ -60,3 +60,19 @@ export function statusLetter(status: string | null): string {
 export function cx(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
 }
+
+export type Theme = "dark" | "light";
+
+export function initialTheme(): Theme {
+  const saved = localStorage.getItem("gc-theme");
+  if (saved === "dark" || saved === "light") return saved;
+  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+export function applyTheme(t: Theme) {
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem("gc-theme", t);
+}
+
+export const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
+export const modKey = isMac ? "⌘" : "Ctrl";

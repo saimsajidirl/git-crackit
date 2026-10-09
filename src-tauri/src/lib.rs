@@ -26,6 +26,9 @@ pub fn run() {
             cmds_repo::remove_recent_repository,
             cmds_repo::validate_repository_path,
             cmds_repo::set_credentials,
+            cmds_repo::get_credentials,
+            cmds_repo::clear_credentials,
+            cmds_repo::open_external_url,
             // working tree / files
             cmds_files::get_status,
             cmds_files::stage_files,

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open as openDirDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
@@ -14,7 +14,8 @@ import { CommitDetailView } from "./components/CommitDetail";
 import { DiffView } from "./components/DiffView";
 import { ContextMenu, MenuItem } from "./components/ContextMenu";
 import { Icon } from "./icons";
-import { cx } from "./util";
+import { applyTheme, cx, initialTheme, modKey, type Theme } from "./util";
+import { CommandPalette, type Command } from "./components/CommandPalette";
 import {
   CloneDialog, InitDialog, ConfirmDialog, NewBranchDialog, PickBranchDialog,
   RenameBranchDialog, StashDialog, TagsDialog, RemotesDialog, SettingsDialog,
@@ -66,6 +67,15 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const pendingRetry = useRef<(() => void) | null>(null);
+  const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [palette, setPalette] = useState(false);
+
+  useEffect(() => applyTheme(theme), [theme]);
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(() => setNotice(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [notice]);
 
   /* ---------- data loading ---------- */
 
@@ -206,9 +216,19 @@ export default function App() {
       refreshStatus();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "F5" || (e.ctrlKey && e.key.toLowerCase() === "r")) {
+      const mod = e.ctrlKey || e.metaKey;
+      if (e.key === "F5" || (mod && e.key.toLowerCase() === "r")) {
         e.preventDefault();
         refreshAll();
+      } else if (mod && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((v) => !v);
+      } else if (mod && e.key === "1") {
+        e.preventDefault();
+        setTab("changes");
+      } else if (mod && e.key === "2") {
+        e.preventDefault();
+        setTab("history");
       }
     };
     window.addEventListener("focus", onFocus);
@@ -234,6 +254,9 @@ export default function App() {
           }).catch(() => {});
         }
       }
+      // No remembered credentials → offer sign-in (asked again each launch until saved).
+      const creds = await api.getCredentials().catch(() => null);
+      if (creds && !creds.has_password) setDialog({ kind: "credentials" });
     })();
   }, []);
 
@@ -377,6 +400,41 @@ export default function App() {
     setMenu({ x: e.clientX, y: e.clientY, items });
   };
 
+  const commands: Command[] = useMemo(() => {
+    const list: Command[] = [];
+    const add = (group: string, label: string, run: () => void, icon?: string, hint?: string) =>
+      list.push({ id: `${group}:${label}`, group, label, run, icon, hint });
+    add("Repository", "Open local repository…", openViaDialog, "folder");
+    add("Repository", "Clone repository…", () => setDialog({ kind: "clone" }), "download");
+    add("Repository", "Create new repository…", () => setDialog({ kind: "init" }), "plus");
+    for (const r of recent.recent) add("Recent", r, () => openPath(r), "repo");
+    if (repo) {
+      add("Navigate", "Show changes", () => setTab("changes"), "diff", `${modKey}1`);
+      add("Navigate", "Show history", () => setTab("history"), "history", `${modKey}2`);
+      add("Remote", "Fetch", fetchOp, "sync");
+      add("Remote", "Fetch all remotes", () => run("Fetching all…", () => api.fetchAll()), "sync");
+      add("Remote", "Pull", pullOp, "arrowDown");
+      add("Remote", "Push", pushOp, "arrowUp");
+      add("Branch", "New branch…", () => setDialog({ kind: "newBranch" }), "plus");
+      add("Branch", `Merge into ${repo.head ?? "HEAD"}…`, () => setDialog({ kind: "merge" }), "merge");
+      add("Branch", "Rebase current branch…", () => setDialog({ kind: "rebase" }), "merge");
+      add("Branch", "Stashes…", () => setDialog({ kind: "stash" }), "stash");
+      add("Branch", "Tags…", () => setDialog({ kind: "tags" }), "tag");
+      for (const b of branches) {
+        if (!b.is_head && !b.is_remote) add("Checkout", b.name, () => checkout(b.name), "branch");
+      }
+      add("Settings", "Remotes…", () => setDialog({ kind: "remotes" }), "globe");
+      add("Settings", "Submodules…", () => setDialog({ kind: "submodules" }), "repo");
+      add("Settings", "Repository settings…", () => setDialog({ kind: "settings" }), "gear");
+      add("Settings", "HTTPS credentials…", () => setDialog({ kind: "credentials" }), "cloud");
+      add("Settings", "Refresh", refreshAll, "sync", "F5");
+    }
+    add("Appearance", theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
+      () => setTheme((t) => (t === "dark" ? "light" : "dark")), theme === "dark" ? "sun" : "moon");
+    return list;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo, branches, recent.recent, theme, refreshAll]);
+
   /* ---------- render ---------- */
 
   const headName = repo?.is_detached ? "detached HEAD" : repo?.head ?? "main";
@@ -409,20 +467,27 @@ export default function App() {
         onBranchContext={branchMenu}
         onFetchAll={() => run("Fetching all…", () => api.fetchAll())}
         onSubmodules={() => setDialog({ kind: "submodules" })}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+        onCommandPalette={() => setPalette(true)}
       />
 
-      {error && (
-        <div className="banner error">
-          <Icon name="alert" size={14} />
-          <span className="grow">{error}</span>
-          <button className="icon-btn" onClick={() => setError(null)}><Icon name="x" size={12} /></button>
-        </div>
-      )}
-      {notice && (
-        <div className="banner info">
-          <Icon name="check" size={14} />
-          <span className="grow">{notice}</span>
-          <button className="icon-btn" onClick={() => setNotice(null)}><Icon name="x" size={12} /></button>
+      {(error || notice) && (
+        <div className="toast-stack">
+          {error && (
+            <div className="toast error" role="alert">
+              <Icon name="alert" size={15} />
+              <span className="grow">{error}</span>
+              <button className="icon-btn" onClick={() => setError(null)}><Icon name="x" size={12} /></button>
+            </div>
+          )}
+          {notice && (
+            <div className="toast info" role="status">
+              <Icon name="check" size={15} />
+              <span className="grow">{notice}</span>
+              <button className="icon-btn" onClick={() => setNotice(null)}><Icon name="x" size={12} /></button>
+            </div>
+          )}
         </div>
       )}
       {repo && repo.state !== "clean" && (
@@ -447,12 +512,13 @@ export default function App() {
       ) : (
         <div className="main">
           <div className="sidebar">
-            <div className="tabs">
-              <button className={cx("tab", tab === "changes" && "active")} onClick={() => setTab("changes")}>
-                Changes {changes.length > 0 && <span className="badge blue">{changes.length}</span>}
+            <div className="seg" role="tablist">
+              <span className={cx("seg-thumb", tab === "history" && "right")} />
+              <button role="tab" aria-selected={tab === "changes"} className={cx("seg-btn", tab === "changes" && "active")} onClick={() => setTab("changes")}>
+                <Icon name="diff" size={13} /> Changes {changes.length > 0 && <span className="badge blue">{changes.length}</span>}
               </button>
-              <button className={cx("tab", tab === "history" && "active")} onClick={() => setTab("history")}>
-                History
+              <button role="tab" aria-selected={tab === "history"} className={cx("seg-btn", tab === "history" && "active")} onClick={() => setTab("history")}>
+                <Icon name="history" size={13} /> History
               </button>
             </div>
             {tab === "changes" ? (
@@ -492,7 +558,6 @@ export default function App() {
                 onSearch={(q) => { setQuery(q); loadHistory(q, true); }}
                 onLoadMore={loadMore}
                 hasMore={hasMore}
-                loading={busy !== null}
               />
             )}
           </div>
@@ -526,9 +591,21 @@ export default function App() {
       )}
 
       <div className="statusbar">
-        <span className="ellipsis">{repo ? repo.path : "No repository open"}</span>
-        {busy && <span className="muted">{busy}</span>}
+        <span className={cx("status-dot", busy && "busy")} />
+        {repo && (
+          <span className="status-item">
+            <Icon name="branch" size={11} /> {repo.is_detached ? "detached" : repo.head ?? "—"}
+          </span>
+        )}
+        <span className="ellipsis faint">{repo ? repo.path : "No repository open"}</span>
+        <span className="grow" />
+        {busy && <span className="status-item">{busy}</span>}
+        <button className="status-item status-btn" onClick={() => setPalette(true)}>
+          <kbd>{modKey}</kbd><kbd>K</kbd> Commands
+        </button>
       </div>
+
+      {palette && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
 
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
 

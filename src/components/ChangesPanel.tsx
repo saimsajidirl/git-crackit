@@ -103,11 +103,6 @@ export function ChangesPanel({
 
   return (
     <div className="changes-panel">
-      <div className="panel-header">
-        <span className="panel-title">Changes</span>
-        <span className="badge blue">{changes.length}</span>
-      </div>
-
       {conflicts.length > 0 && (
         <div className="conflict-banner">
           <Icon name="alert" size={14} />
@@ -123,7 +118,9 @@ export function ChangesPanel({
           onChange={(e) => onToggleAll(e.target.checked)}
           title="Stage/unstage all"
         />
-        <span className="muted grow">{normal.length} changed file{normal.length === 1 ? "" : "s"}</span>
+        <span className="muted grow small">
+          {stagedCount > 0 ? `${stagedCount} of ${normal.length} staged` : `${normal.length} changed file${normal.length === 1 ? "" : "s"}`}
+        </span>
         <div className="toolbar-button-wrap">
           <button className="icon-btn" title="More actions" onClick={() => setKebabOpen((v) => !v)}>
             <Icon name="kebab" size={14} />
@@ -144,23 +141,29 @@ export function ChangesPanel({
         {normal.map(renderRow)}
         {changes.length === 0 && (
           <div className="list-empty">
-            <Icon name="check" size={28} />
+            <span className="empty-icon"><Icon name="check" size={22} /></span>
             <p>No local changes</p>
+            <p className="faint small">Your working tree is clean</p>
           </div>
         )}
       </div>
 
       <div className="commit-box">
         <div className="commit-box-inner">
-          <input
-            className="input"
-            placeholder={isUnborn ? "Summary (required) — first commit" : "Summary (required)"}
-            value={summary}
-            onChange={(e) => setSummary(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.ctrlKey || e.metaKey || !e.shiftKey)) doCommit();
-            }}
-          />
+          <div className="summary-wrap">
+            <input
+              className="input"
+              placeholder={isUnborn ? "Summary (required) — first commit" : "Summary (required)"}
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.ctrlKey || e.metaKey || !e.shiftKey)) doCommit();
+              }}
+            />
+            {summary.length > 0 && (
+              <span className={cx("char-count", summary.length > 72 && "over")}>{72 - summary.length}</span>
+            )}
+          </div>
           <textarea
             className="input"
             placeholder="Description (Ctrl+Enter to commit)"
@@ -174,7 +177,7 @@ export function ChangesPanel({
           <label className="amend-row">
             <input
               type="checkbox"
-              className="cb"
+              className="switch"
               checked={amend}
               onChange={(e) => setAmend(e.target.checked)}
               disabled={isUnborn}
@@ -182,7 +185,8 @@ export function ChangesPanel({
             <span>Amend last commit</span>
           </label>
           <button className="btn primary block" disabled={!canCommit} onClick={doCommit}>
-            {busy ?? commitLabel}
+            {busy ? <Icon name="sync" size={14} className="spin" /> : <Icon name="check" size={14} />}
+            <span className="ellipsis">{busy ?? commitLabel}</span>
           </button>
         </div>
       </div>

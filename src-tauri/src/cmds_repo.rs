@@ -200,7 +200,54 @@ pub fn set_credentials(
     state: State<AppState>,
     username: Option<String>,
     password: Option<String>,
+    remember: Option<bool>,
 ) -> Result<(), String> {
-    *state.creds.lock().map_err(|e| e.to_string())? = Credentials { username, password };
+    let creds = Credentials {
+        username: username.filter(|s| !s.is_empty()),
+        password: password.filter(|s| !s.is_empty()),
+    };
+    *state.creds.lock().map_err(|e| e.to_string())? = creds.clone();
+    if remember.unwrap_or(false) {
+        state::save_credentials(if creds.username.is_some() || creds.password.is_some() {
+            Some(creds)
+        } else {
+            None
+        });
+    } else {
+        state::save_credentials(None);
+    }
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_credentials(state: State<AppState>) -> Result<CredentialStatus, String> {
+    let creds = get_creds(&state);
+    Ok(CredentialStatus {
+        username: creds.username,
+        has_password: creds.password.is_some(),
+        remembered: state::load_persisted().credentials.is_some(),
+    })
+}
+
+#[tauri::command]
+pub fn clear_credentials(state: State<AppState>) -> Result<(), String> {
+    *state.creds.lock().map_err(|e| e.to_string())? = Credentials::default();
+    state::save_credentials(None);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("Only https:// URLs can be opened".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    let res = std::process::Command::new("cmd")
+        .args(["/C", "start", "", &url])
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let res = std::process::Command::new("open").arg(&url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let res = std::process::Command::new("xdg-open").arg(&url).spawn();
+    res.map(|_| ()).map_err(|e| format!("Could not open browser: {}", e))
 }

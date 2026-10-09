@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Credentials {
     pub username: Option<String>,
     pub password: Option<String>,
@@ -19,7 +19,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             repo_path: Mutex::new(None),
-            creds: Mutex::new(Credentials::default()),
+            creds: Mutex::new(load_persisted().credentials.unwrap_or_default()),
             watcher: Mutex::new(None),
         }
     }
@@ -29,6 +29,7 @@ impl Default for AppState {
 pub struct PersistedState {
     pub recent: Vec<String>,
     pub last_repo: Option<String>,
+    pub credentials: Option<Credentials>,
 }
 
 fn state_file() -> Option<PathBuf> {
@@ -72,5 +73,12 @@ pub fn remove_recent(path: &str) {
 pub fn set_last(path: Option<String>) {
     let mut st = load_persisted();
     st.last_repo = path;
+    save_persisted(&st);
+}
+
+/// Persist (or clear, with `None`) remembered HTTPS credentials.
+pub fn save_credentials(creds: Option<Credentials>) {
+    let mut st = load_persisted();
+    st.credentials = creds;
     save_persisted(&st);
 }

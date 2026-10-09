@@ -168,3 +168,10 @@ pub struct RecentRepos {
     pub recent: Vec<String>,
     pub last: Option<String>,
 }
+
+#[derive(Serialize)]
+pub struct CredentialStatus {
+    pub username: Option<String>,
+    pub has_password: bool,
+    pub remembered: bool,
+}

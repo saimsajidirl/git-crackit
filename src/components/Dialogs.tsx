@@ -416,25 +416,78 @@ export function SubmodulesDialog({ onClose, onChanged, onError }: { onClose: () 
 }
 
 /* ---------------- Credentials (HTTPS) ---------------- */
+const GITHUB_TOKEN_URL = "https://github.com/settings/tokens/new?scopes=repo&description=Git%20Crackit";
+
 export function CredentialsDialog({ onClose, onSaved, onError }: { onClose: () => void; onSaved: () => void; onError: (m: string) => void }) {
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
+  const [remember, setRemember] = useState(true);
+  const [savedUser, setSavedUser] = useState<string | null>(null);
+  const [remembered, setRemembered] = useState(false);
+
+  useEffect(() => {
+    api.getCredentials()
+      .then((c) => {
+        if (c.username) setUser(c.username);
+        if (c.remembered) {
+          setSavedUser(c.username);
+          setRemembered(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const save = async () => {
+    try {
+      await api.setCredentials(user || null, pass || null, remember);
+      onSaved();
+      onClose();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  const forget = async () => {
+    try {
+      await api.clearCredentials();
+      setSavedUser(null);
+      setRemembered(false);
+      setPass("");
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
   return (
-    <Modal title="Remote credentials (HTTPS)" onClose={onClose}>
+    <Modal title="Sign in" onClose={onClose}>
       <p className="muted small">
-        Used for fetch/push/clone over HTTPS. For GitHub, use your username and a personal access token as the password.
+        Used for fetch/push/clone over HTTPS.
       </p>
+      <button className="btn signin-btn" onClick={() => api.openExternalUrl(GITHUB_TOKEN_URL).catch((e) => onError(String(e)))}>
+        <Icon name="globe" size={14} /> Sign in with GitHub
+      </button>
+      <p className="muted small">
+        Opens github.com in your browser to create a personal access token — copy it and paste it below.
+      </p>
+      {remembered && (
+        <p className="muted small">
+          Remembered credentials{savedUser ? <> for <b>{savedUser}</b></> : ""} are being reused.{" "}
+          <button className="link-btn" onClick={forget}>Forget</button>
+        </p>
+      )}
       <Field label="Username">
         <input className="input" autoFocus value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />
       </Field>
-      <Field label="Password / token">
+      <Field label="Personal access token">
         <input className="input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="off" />
       </Field>
+      <label className="amend-row">
+        <input type="checkbox" className="cb" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+        <span>Remember me — save credentials on this device</span>
+      </label>
       <div className="modal-actions">
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn primary" onClick={async () => {
-          try { await api.setCredentials(user || null, pass || null); onSaved(); onClose(); } catch (e) { onError(String(e)); }
-        }}>Save & retry</button>
+        <button className="btn primary" disabled={!user.trim() || !pass} onClick={save}>Save &amp; continue</button>
       </div>
     </Modal>
   );

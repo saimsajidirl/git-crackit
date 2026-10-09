@@ -382,6 +382,7 @@ kbd, .kbd {
 .btn.danger { color: var(--red); border-color: var(--red-line); background: var(--red-soft); }
 .btn.danger:hover:not(:disabled) { background: var(--red); border-color: var(--red); color: #fff; }
 .btn.small { height: 26px; padding: 0 10px; font-size: 12px; border-radius: 7px; }
+.signin-btn { width: 100%; justify-content: center; gap: 8px; height: 38px; margin: 10px 0 6px; }
 .btn.block { width: 100%; height: 38px; font-size: 13px; }
 .btn:disabled { opacity: 0.45; cursor: default; box-shadow: none; filter: grayscale(0.4); }
 

@@ -147,3 +147,9 @@ export interface RecentRepos {
   recent: string[];
   last: string | null;
 }
+
+export interface CredentialStatus {
+  username: string | null;
+  has_password: boolean;
+  remembered: boolean;
+}

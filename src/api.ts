@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   RepoInfo, FileChange, CommitInfo, CommitDetail, FileDiff, BranchInfo,
   RemoteInfo, StashInfo, TagInfo, MergeResult, BlameHunkInfo, SubmoduleInfo,
-  GitConfigInfo, RecentRepos,
+  GitConfigInfo, RecentRepos, CredentialStatus,
 } from "./types";
 
 export const api = {
@@ -14,8 +14,11 @@ export const api = {
   getRecentRepositories: () => invoke<RecentRepos>("get_recent_repositories"),
   removeRecentRepository: (path: string) => invoke<void>("remove_recent_repository", { path }),
   validateRepositoryPath: (path: string) => invoke<boolean>("validate_repository_path", { path }),
-  setCredentials: (username: string | null, password: string | null) =>
-    invoke<void>("set_credentials", { username, password }),
+  setCredentials: (username: string | null, password: string | null, remember: boolean) =>
+    invoke<void>("set_credentials", { username, password, remember }),
+  getCredentials: () => invoke<CredentialStatus>("get_credentials"),
+  clearCredentials: () => invoke<void>("clear_credentials"),
+  openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
 
   getStatus: () => invoke<FileChange[]>("get_status"),
   stageFiles: (paths: string[]) => invoke<void>("stage_files", { paths }),

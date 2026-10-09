@@ -254,6 +254,9 @@ export default function App() {
           }).catch(() => {});
         }
       }
+      // No remembered credentials → offer sign-in (asked again each launch until saved).
+      const creds = await api.getCredentials().catch(() => null);
+      if (creds && !creds.has_password) setDialog({ kind: "credentials" });
     })();
   }, []);
 

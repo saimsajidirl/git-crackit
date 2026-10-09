@@ -28,6 +28,8 @@ export const api = {
   getWorkingDiff: (path: string, staged: boolean) =>
     invoke<FileDiff>("get_working_diff", { path, staged }),
   listSubmodules: () => invoke<SubmoduleInfo[]>("list_submodules"),
+  updateSubmodules: () => invoke<void>("update_submodules"),
+  ignoreFile: (path: string) => invoke<void>("ignore_file", { path }),
   getBlame: (path: string) => invoke<BlameHunkInfo[]>("get_blame", { path }),
   getGitIdentity: () => invoke<GitConfigInfo>("get_git_identity"),
   setGitIdentity: (name: string, email: string, global: boolean) =>

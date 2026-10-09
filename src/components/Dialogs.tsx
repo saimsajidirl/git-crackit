@@ -3,7 +3,7 @@ import { Modal, Field } from "./Modal";
 import { Icon } from "../icons";
 import { api } from "../api";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { BranchInfo, RemoteInfo, StashInfo, TagInfo, OpProgress } from "../types";
+import type { BranchInfo, RemoteInfo, StashInfo, TagInfo, OpProgress, SubmoduleInfo } from "../types";
 import { timeAgo } from "../util";
 import { listen } from "@tauri-apps/api/event";
 
@@ -135,7 +135,7 @@ export function NewBranchDialog({
   branches, defaultBase, onClose, onCreate, onError,
 }: {
   branches: BranchInfo[]; defaultBase: string;
-  onClose: () => void; onCreate: (name: string, base: string, checkout: boolean) => void; onError: (m: string) => void;
+  onClose: () => void; onCreate: (name: string, base: string, checkout: boolean) => Promise<void> | void; onError: (m: string) => void;
 }) {
   const [name, setName] = useState("");
   const [base, setBase] = useState(defaultBase);
@@ -149,6 +149,9 @@ export function NewBranchDialog({
       <Field label="Create from">
         <select className="input" value={base} onChange={(e) => setBase(e.target.value)}>
           <option value="">HEAD</option>
+          {base && !allBases.some((b) => b.name === base) && (
+            <option value={base}>Commit {base.slice(0, 7)}</option>
+          )}
           {allBases.map((b) => (
             <option key={(b.is_remote ? "r:" : "") + b.name} value={b.name}>{b.name}</option>
           ))}
@@ -269,11 +272,11 @@ export function StashDialog({ onClose, onChanged, onError }: { onClose: () => vo
 }
 
 /* ---------------- Tags ---------------- */
-export function TagsDialog({ onClose, onChanged, onError }: { onClose: () => void; onChanged: () => void; onError: (m: string) => void }) {
+export function TagsDialog({ onClose, onChanged, onError, initialTarget }: { onClose: () => void; onChanged: () => void; onError: (m: string) => void; initialTarget?: string }) {
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [name, setName] = useState("");
   const [msg, setMsg] = useState("");
-  const [target, setTarget] = useState("");
+  const [target, setTarget] = useState(initialTarget ?? "");
   const load = () => api.listTags().then(setTags).catch((e) => onError(String(e)));
   useEffect(() => { load(); }, []);
   const wrap = async (fn: () => Promise<unknown>) => {
@@ -376,6 +379,37 @@ export function SettingsDialog({ onClose, onError }: { onClose: () => void; onEr
         <button className="btn primary" disabled={!loaded} onClick={async () => {
           try { await api.setGitIdentity(name.trim(), email.trim(), global); onClose(); } catch (e) { onError(String(e)); }
         }}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------------- Submodules ---------------- */
+export function SubmodulesDialog({ onClose, onChanged, onError }: { onClose: () => void; onChanged: () => void; onError: (m: string) => void }) {
+  const [subs, setSubs] = useState<SubmoduleInfo[]>([]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.listSubmodules().then(setSubs).catch((e) => onError(String(e))); }, []);
+  return (
+    <Modal title="Submodules" onClose={onClose} width={520}>
+      <div className="modal-list">
+        {subs.length === 0 && <div className="list-empty small-pad"><p className="muted">No submodules</p></div>}
+        {subs.map((s) => (
+          <div key={s.name} className="list-row">
+            <Icon name="repo" size={14} />
+            <div className="grow">
+              <div>{s.name}</div>
+              <div className="muted small">{s.path}{s.url ? ` · ${s.url}` : ""}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="modal-actions">
+        <button className="btn" onClick={onClose}>Close</button>
+        <button className="btn primary" disabled={subs.length === 0 || busy} onClick={async () => {
+          setBusy(true);
+          try { await api.updateSubmodules(); onChanged(); } catch (e) { onError(String(e)); }
+          setBusy(false);
+        }}>{busy ? "Updating…" : "Init & update all"}</button>
       </div>
     </Modal>
   );

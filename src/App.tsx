@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { open as openDirDialog } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import type {
   RepoInfo, FileChange, CommitInfo, CommitDetail, FileDiff, BranchInfo,
@@ -17,24 +18,29 @@ import { cx } from "./util";
 import {
   CloneDialog, InitDialog, ConfirmDialog, NewBranchDialog, PickBranchDialog,
   RenameBranchDialog, StashDialog, TagsDialog, RemotesDialog, SettingsDialog,
-  CredentialsDialog,
+  CredentialsDialog, SubmodulesDialog,
 } from "./components/Dialogs";
 
 type Dialog =
   | { kind: "clone" }
   | { kind: "init" }
-  | { kind: "newBranch" }
+  | { kind: "newBranch"; base?: string }
   | { kind: "merge" }
   | { kind: "rebase" }
   | { kind: "rename"; branch: string }
   | { kind: "stash" }
-  | { kind: "tags" }
+  | { kind: "tags"; target?: string }
   | { kind: "remotes" }
+  | { kind: "submodules" }
   | { kind: "settings" }
   | { kind: "credentials" }
   | { kind: "confirm"; title: string; message: React.ReactNode; confirmLabel?: string; danger?: boolean; onConfirm: () => void };
 
 const PAGE = 300;
+
+function normalCount(changes: FileChange[]): number {
+  return changes.filter((c) => !c.conflicted).length;
+}
 
 export default function App() {
   const [repo, setRepo] = useState<RepoInfo | null>(null);
@@ -174,6 +180,46 @@ export default function App() {
     if (typeof p === "string") openPath(p);
   }, [openPath]);
 
+  /* ---------- live refresh: fs watcher events + window focus + F5 ---------- */
+
+  const selFileRef = useRef<FileSelection | null>(null);
+  selFileRef.current = selFile;
+
+  useEffect(() => {
+    let timer: number | undefined;
+    const un = listen<string>("repo-changed", (e) => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (e.payload === "git") {
+          refreshAll();
+        } else {
+          refreshStatus();
+          const sf = selFileRef.current;
+          if (sf) {
+            api.getWorkingDiff(sf.path, sf.staged).then(setWorkDiff).catch(() => setWorkDiff(null));
+          }
+        }
+      }, 60);
+    });
+    const onFocus = () => {
+      refreshInfo();
+      refreshStatus();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "F5" || (e.ctrlKey && e.key.toLowerCase() === "r")) {
+        e.preventDefault();
+        refreshAll();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      un.then((f) => f());
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [refreshAll, refreshStatus, refreshInfo]);
+
   /* ---------- boot ---------- */
 
   useEffect(() => {
@@ -252,6 +298,7 @@ export default function App() {
           api.getBlame(f.path).then((hunks) => setBlame({ path: f.path, hunks })).catch((err) => setError(String(err)));
           setSelFile({ path: f.path, staged: f.staged !== null });
         } },
+      { label: "Add to .gitignore", onClick: () => run("Updating .gitignore…", () => api.ignoreFile(f.path)) },
       { label: "Copy path", onClick: () => navigator.clipboard.writeText(f.path) },
     ];
     setMenu({ x: e.clientX, y: e.clientY, items });
@@ -278,8 +325,8 @@ export default function App() {
       x: e.clientX,
       y: e.clientY,
       items: [
-        { label: "Create branch here…", onClick: () => setDialog({ kind: "newBranch" }) },
-        { label: "Create tag here…", onClick: () => setDialog({ kind: "tags" }) },
+        { label: "Create branch here…", onClick: () => setDialog({ kind: "newBranch", base: c.oid }) },
+        { label: "Create tag here…", onClick: () => setDialog({ kind: "tags", target: c.oid }) },
         { label: "", separator: true },
         { label: "Cherry-pick", onClick: () => run("Cherry-picking…", () => api.cherryPick(c.oid)) },
         { label: "Revert commit", onClick: () => run("Reverting…", () => api.revertCommit(c.oid)) },
@@ -360,6 +407,8 @@ export default function App() {
         onCloseRepo={() => run("Closing…", async () => { await api.closeRepository(); setRepo(null); setChanges([]); setCommits([]); setDetail(null); setSelFile(null); }, { refresh: false })}
         onRemoveRecent={(p) => { api.removeRecentRepository(p).then(loadRecent); }}
         onBranchContext={branchMenu}
+        onFetchAll={() => run("Fetching all…", () => api.fetchAll())}
+        onSubmodules={() => setDialog({ kind: "submodules" })}
       />
 
       {error && (
@@ -415,6 +464,18 @@ export default function App() {
                 onToggleAll={toggleAll}
                 onCommit={commit}
                 onDiscard={(paths) => run("Discarding…", () => api.discardChanges(paths))}
+                onDiscardAll={() =>
+                  setDialog({
+                    kind: "confirm",
+                    title: "Discard all changes",
+                    message: <>Discard all changes in <b>{normalCount(changes)}</b> file(s)? This cannot be undone.</>,
+                    confirmLabel: "Discard all",
+                    danger: true,
+                    onConfirm: () =>
+                      run("Discarding…", () => api.discardChanges(changes.map((c) => c.path))),
+                  })
+                }
+                onStashAll={() => setDialog({ kind: "stash" })}
                 onContextMenu={fileMenu}
                 headName={headName}
                 repoState={repo.state}
@@ -476,7 +537,7 @@ export default function App() {
       {dialog?.kind === "newBranch" && (
         <NewBranchDialog
           branches={branches}
-          defaultBase=""
+          defaultBase={dialog.base ?? ""}
           onClose={() => setDialog(null)}
           onError={setError}
           onCreate={async (name, base, co) => {
@@ -515,7 +576,8 @@ export default function App() {
         />
       )}
       {dialog?.kind === "stash" && <StashDialog onClose={() => setDialog(null)} onChanged={refreshAll} onError={setError} />}
-      {dialog?.kind === "tags" && <TagsDialog onClose={() => setDialog(null)} onChanged={refreshAll} onError={setError} />}
+      {dialog?.kind === "tags" && <TagsDialog onClose={() => setDialog(null)} onChanged={refreshAll} onError={setError} initialTarget={dialog.target} />}
+      {dialog?.kind === "submodules" && <SubmodulesDialog onClose={() => setDialog(null)} onChanged={refreshAll} onError={setError} />}
       {dialog?.kind === "remotes" && <RemotesDialog onClose={() => setDialog(null)} onChanged={refreshAll} onError={setError} />}
       {dialog?.kind === "settings" && <SettingsDialog onClose={() => setDialog(null)} onError={setError} />}
       {dialog?.kind === "credentials" && (

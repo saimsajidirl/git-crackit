@@ -1,3 +1,4 @@
+use notify::RecommendedWatcher;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -11,6 +12,7 @@ pub struct Credentials {
 pub struct AppState {
     pub repo_path: Mutex<Option<PathBuf>>,
     pub creds: Mutex<Credentials>,
+    pub watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
 impl Default for AppState {
@@ -18,6 +20,7 @@ impl Default for AppState {
         Self {
             repo_path: Mutex::new(None),
             creds: Mutex::new(Credentials::default()),
+            watcher: Mutex::new(None),
         }
     }
 }

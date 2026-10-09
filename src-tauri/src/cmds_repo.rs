@@ -3,7 +3,7 @@ use crate::state::{self, AppState, Credentials};
 use crate::types::*;
 use git2::{FetchOptions, Repository};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 
 pub fn repo_info(repo: &Repository, path: &Path) -> Result<RepoInfo, String> {
     let name = path
@@ -84,7 +84,7 @@ pub fn repo_info(repo: &Repository, path: &Path) -> Result<RepoInfo, String> {
 }
 
 #[tauri::command]
-pub fn open_repository(state: State<AppState>, path: String) -> Result<RepoInfo, String> {
+pub fn open_repository<R: Runtime>(app: AppHandle<R>, state: State<AppState>, path: String) -> Result<RepoInfo, String> {
     let p = PathBuf::from(&path);
     let repo = Repository::open(&p)
         .or_else(|_| Repository::open_ext(&p, git2::RepositoryOpenFlags::empty(), Vec::<&Path>::new()))
@@ -96,12 +96,13 @@ pub fn open_repository(state: State<AppState>, path: String) -> Result<RepoInfo,
         .unwrap_or_else(|| p.clone());
     let info = repo_info(&repo, &root)?;
     *state.repo_path.lock().map_err(|e| e.to_string())? = Some(root.clone());
+    crate::watcher::start(&app, &state, &root);
     state::add_recent(&info.path);
     Ok(info)
 }
 
 #[tauri::command]
-pub fn init_repository(state: State<AppState>, path: String, bare: Option<bool>) -> Result<RepoInfo, String> {
+pub fn init_repository<R: Runtime>(app: AppHandle<R>, state: State<AppState>, path: String, bare: Option<bool>) -> Result<RepoInfo, String> {
     let p = PathBuf::from(&path);
     std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     let repo = if bare.unwrap_or(false) {
@@ -112,13 +113,14 @@ pub fn init_repository(state: State<AppState>, path: String, bare: Option<bool>)
     .map_err(|e| e.message().to_string())?;
     let info = repo_info(&repo, &p)?;
     *state.repo_path.lock().map_err(|e| e.to_string())? = Some(p.clone());
+    crate::watcher::start(&app, &state, &p);
     state::add_recent(&info.path);
     Ok(info)
 }
 
 #[tauri::command]
-pub fn clone_repository(
-    app: AppHandle,
+pub fn clone_repository<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     url: String,
     dest: String,
@@ -152,7 +154,8 @@ pub fn clone_repository(
         .map_err(|e| e.message().to_string())?;
 
     let info = repo_info(&repo, &dest_path)?;
-    *state.repo_path.lock().map_err(|e| e.to_string())? = Some(dest_path);
+    *state.repo_path.lock().map_err(|e| e.to_string())? = Some(dest_path.clone());
+    crate::watcher::start(&app, &state, &dest_path);
     state::add_recent(&info.path);
     Ok(info)
 }
@@ -160,6 +163,7 @@ pub fn clone_repository(
 #[tauri::command]
 pub fn close_repository(state: State<AppState>) -> Result<(), String> {
     *state.repo_path.lock().map_err(|e| e.to_string())? = None;
+    crate::watcher::stop(&state);
     state::set_last(None);
     Ok(())
 }

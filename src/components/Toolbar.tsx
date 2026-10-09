@@ -28,6 +28,8 @@ export interface ToolbarProps {
   onCloseRepo: () => void;
   onRemoveRecent: (path: string) => void;
   onBranchContext: (e: React.MouseEvent, b: BranchInfo) => void;
+  onFetchAll: () => void;
+  onSubmodules: () => void;
 }
 
 function ToolbarButton({
@@ -66,6 +68,7 @@ export function Toolbar(p: ToolbarProps) {
   if (repo && repo.remotes.length === 0) {
     fetchTitle = "Publish";
     fetchSub = "no remote configured";
+    fetchAction = p.onRemotes;
   } else if (repo) {
     if (!repo.upstream) {
       fetchTitle = "Publish branch";
@@ -210,8 +213,14 @@ export function Toolbar(p: ToolbarProps) {
               <button className="menu-item" onClick={() => { close(); p.onFetch(); }}>
                 <Icon name="sync" size={14} /> Fetch
               </button>
+              <button className="menu-item" onClick={() => { close(); p.onFetchAll(); }}>
+                <Icon name="download" size={14} /> Fetch all remotes
+              </button>
               <button className="menu-item" onClick={() => { close(); p.onRemotes(); }}>
                 <Icon name="globe" size={14} /> Remotes…
+              </button>
+              <button className="menu-item" onClick={() => { close(); p.onSubmodules(); }}>
+                <Icon name="repo" size={14} /> Submodules…
               </button>
               <button className="menu-item" onClick={() => { close(); p.onCredentials(); }}>
                 <Icon name="gear" size={14} /> Credentials…

@@ -20,7 +20,7 @@ pub fn get_status(state: State<AppState>) -> Result<Vec<FileChange>, String> {
 
     for entry in statuses.iter() {
         let st = entry.status();
-        if st.contains(Status::CURRENT) || st.contains(Status::IGNORED) {
+        if st.is_empty() || st.contains(Status::IGNORED) {
             continue;
         }
         let conflicted = st.contains(Status::CONFLICTED);
@@ -316,6 +316,37 @@ pub fn get_blame(state: State<AppState>, path: String) -> Result<Vec<BlameHunkIn
         });
     }
     Ok(out)
+}
+
+#[tauri::command]
+pub fn ignore_file(state: State<AppState>, path: String) -> Result<(), String> {
+    let repo = open_repo(&state)?;
+    let wd = workdir(&repo)?.to_path_buf();
+    let ignore = wd.join(".gitignore");
+    let mut content = std::fs::read_to_string(&ignore).unwrap_or_default();
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    if content.lines().any(|l| l.trim() == path) {
+        return Ok(());
+    }
+    content.push_str(&path);
+    content.push('\n');
+    std::fs::write(&ignore, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_submodules(state: State<AppState>) -> Result<(), String> {
+    let repo = open_repo(&state)?;
+    let subs = repo.submodules().map_err(|e| e.message().to_string())?;
+    if subs.is_empty() {
+        return Err("No submodules in this repository".into());
+    }
+    for mut s in subs {
+        s.update(true, None).map_err(|e| e.message().to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]

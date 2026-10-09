@@ -2,7 +2,7 @@ use crate::helpers::*;
 use crate::state::AppState;
 use crate::types::*;
 use git2::{BranchType, FetchOptions, PushOptions};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 
 #[tauri::command]
 pub fn list_remotes(state: State<AppState>) -> Result<Vec<RemoteInfo>, String> {
@@ -100,8 +100,8 @@ fn fetch_one(repo: &git2::Repository, remote_name: &str, creds: crate::state::Cr
 }
 
 #[tauri::command]
-pub fn fetch_remote(
-    app: AppHandle,
+pub fn fetch_remote<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     remote: Option<String>,
 ) -> Result<(), String> {

@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import type { FileChange } from "../types";
 import { Icon } from "../icons";
+import { Dropdown } from "./ContextMenu";
 import { cx, dirName, fileName, statusLetter } from "../util";
 
 export interface FileSelection {
@@ -17,6 +18,8 @@ export function ChangesPanel({
   onCommit,
   onDiscard,
   onContextMenu,
+  onDiscardAll,
+  onStashAll,
   headName,
   repoState,
   isUnborn,
@@ -30,6 +33,8 @@ export function ChangesPanel({
   onCommit: (summary: string, description: string, amend: boolean) => void;
   onDiscard: (paths: string[]) => void;
   onContextMenu: (e: React.MouseEvent, f: FileChange) => void;
+  onDiscardAll: () => void;
+  onStashAll: () => void;
   headName: string;
   repoState: string;
   isUnborn: boolean;
@@ -38,6 +43,7 @@ export function ChangesPanel({
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
   const [amend, setAmend] = useState(false);
+  const [kebabOpen, setKebabOpen] = useState(false);
 
   const conflicts = changes.filter((c) => c.conflicted);
   const normal = changes.filter((c) => !c.conflicted);
@@ -117,7 +123,20 @@ export function ChangesPanel({
           onChange={(e) => onToggleAll(e.target.checked)}
           title="Stage/unstage all"
         />
-        <span className="muted">{normal.length} changed file{normal.length === 1 ? "" : "s"}</span>
+        <span className="muted grow">{normal.length} changed file{normal.length === 1 ? "" : "s"}</span>
+        <div className="toolbar-button-wrap">
+          <button className="icon-btn" title="More actions" onClick={() => setKebabOpen((v) => !v)}>
+            <Icon name="kebab" size={14} />
+          </button>
+          <Dropdown open={kebabOpen} onClose={() => setKebabOpen(false)} align="right" width={220}>
+            <button className="menu-item" onClick={() => { setKebabOpen(false); onStashAll(); }}>
+              <Icon name="stash" size={14} /> Stash all changes…
+            </button>
+            <button className="menu-item danger" disabled={normal.length === 0} onClick={() => { setKebabOpen(false); onDiscardAll(); }}>
+              <Icon name="trash" size={14} /> Discard all changes…
+            </button>
+          </Dropdown>
+        </div>
       </div>
 
       <div className="file-list">
@@ -138,14 +157,19 @@ export function ChangesPanel({
             placeholder={isUnborn ? "Summary (required) — first commit" : "Summary (required)"}
             value={summary}
             onChange={(e) => setSummary(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && doCommit()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey || !e.shiftKey)) doCommit();
+            }}
           />
           <textarea
             className="input"
-            placeholder="Description"
+            placeholder="Description (Ctrl+Enter to commit)"
             rows={3}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) doCommit();
+            }}
           />
           <label className="amend-row">
             <input

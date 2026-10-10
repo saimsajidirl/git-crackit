@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#38a0f8"/>
+    </linearGradient>
+    <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="116" fill="url(#fade)"/>
+
+  <!-- branch lane: forks off main, rejoins at merge node -->
+  <path d="M196 352 C196 306 322 316 322 246 L322 158"
+        fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round"
+        opacity="0.92"/>
+  <!-- main lane -->
+  <path d="M196 108 L196 404"
+        fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round"/>
+
+  <!-- commit nodes: white rings with gradient cores -->
+  <g>
+    <circle cx="196" cy="108" r="40" fill="#ffffff"/>
+    <circle cx="196" cy="108" r="17" fill="#2563eb"/>
+    <circle cx="196" cy="352" r="40" fill="#ffffff"/>
+    <circle cx="196" cy="352" r="17" fill="#2563eb"/>
+    <circle cx="196" cy="404" r="40" fill="#ffffff"/>
+    <circle cx="196" cy="404" r="17" fill="#2563eb"/>
+    <circle cx="322" cy="158" r="40" fill="#ffffff"/>
+    <circle cx="322" cy="158" r="17" fill="#2f83f5"/>
+  </g>
+</svg>

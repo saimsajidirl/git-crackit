@@ -115,3 +115,27 @@ fn full_workflow() {
     cmds_repo::close_repository(app.state()).unwrap();
     assert!(cmds_files::get_status(app.state()).is_err());
 }
+
+#[test]
+fn ssh_remote_dispatches_to_git_cli() {
+    use git_crackit::cmds_remotes;
+    let dir = "/tmp/git-crackit-ssh-e2e";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+
+    let app = tauri::test::mock_app();
+    app.manage(AppState::default());
+    let handle = app.handle().clone();
+
+    cmds_repo::init_repository(handle.clone(), app.state(), dir.into(), Some(false)).unwrap();
+    cmds_remotes::add_remote(app.state(), "origin".into(), "git@localhost:nonexistent/repo.git".into()).unwrap();
+
+    let err = cmds_remotes::fetch_remote(handle.clone(), app.state(), Some("origin".into())).unwrap_err();
+    // Must reach the system git CLI (ssh connect/auth error), not git2's
+    // "unsupported URL protocol" error.
+    assert!(!err.contains("unsupported"), "hit git2 path: {}", err);
+    assert!(
+        err.contains("SSH") || err.contains("ssh") || err.contains("onnect"),
+        "unexpected error: {}", err
+    );
+}

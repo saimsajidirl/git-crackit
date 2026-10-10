@@ -25,6 +25,9 @@ export interface ToolbarProps {
   onRemotes: () => void;
   onSettings: () => void;
   onCredentials: () => void;
+  onCheckUpdates: () => void;
+  onPullRequests: () => void;
+  onIssues: () => void;
   onCloseRepo: () => void;
   onRemoveRecent: (path: string) => void;
   onBranchContext: (e: React.MouseEvent, b: BranchInfo) => void;
@@ -249,6 +252,12 @@ export function Toolbar(p: ToolbarProps) {
               <button className="menu-item" onClick={() => { close(); p.onRemotes(); }}>
                 <Icon name="globe" size={14} /> Remotes…
               </button>
+              <button className="menu-item" onClick={() => { close(); p.onPullRequests(); }}>
+                <Icon name="merge" size={14} /> Pull requests…
+              </button>
+              <button className="menu-item" onClick={() => { close(); p.onIssues(); }}>
+                <Icon name="alert" size={14} /> Issues…
+              </button>
               <button className="menu-item" onClick={() => { close(); p.onSubmodules(); }}>
                 <Icon name="repo" size={14} /> Submodules…
               </button>
@@ -258,6 +267,9 @@ export function Toolbar(p: ToolbarProps) {
               <div className="menu-separator" />
               <button className="menu-item" onClick={() => { close(); p.onSettings(); }}>
                 <Icon name="gear" size={14} /> Git settings…
+              </button>
+              <button className="menu-item" onClick={() => { close(); p.onCheckUpdates(); }}>
+                <Icon name="download" size={14} /> Check for updates…
               </button>
             </Dropdown>
           </ToolbarButton>

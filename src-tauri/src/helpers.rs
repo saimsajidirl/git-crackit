@@ -2,8 +2,10 @@ use crate::state::{AppState, Credentials};
 use crate::types::*;
 use git2::{Cred, Delta, Diff, Patch, RemoteCallbacks, Repository, Status};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
-use tauri::State;
+use std::process::{Command, Stdio};
+use tauri::{AppHandle, Emitter, Runtime, State};
 
 pub fn open_repo(state: &State<AppState>) -> Result<Repository, String> {
     let guard = state.repo_path.lock().map_err(|e| e.to_string())?;
@@ -19,6 +21,192 @@ pub fn get_creds(state: &State<AppState>) -> Credentials {
         .lock()
         .map(|c| c.clone())
         .unwrap_or_default()
+}
+
+/// True for ssh:// and scp-like (`[user@]host:path`) remote URLs.
+/// Local paths and https:// return false; Windows drive letters (C:\) excluded.
+pub fn is_ssh_url(url: &str) -> bool {
+    if url.contains("://") {
+        return url.starts_with("ssh://") || url.starts_with("git+ssh://");
+    }
+    let before_slash = url.split('/').next().unwrap_or("");
+    match before_slash.find(':') {
+        Some(i) => i > 1 || before_slash.contains('@'),
+        None => false,
+    }
+}
+
+/// Map stderr from a `git` CLI network op to a friendly (or `AUTH:`-prefixed) error.
+fn map_git_err(stderr: &str) -> String {
+    let m = stderr.trim();
+    let lower = m.to_lowercase();
+    let summary = m.to_string();
+    if lower.contains("permission denied") || lower.contains("publickey") {
+        return "SSH authentication failed — Git Crackit uses your system SSH keys/agent. Run `ssh-add` or check ~/.ssh.".into();
+    }
+    if lower.contains("could not read username")
+        || lower.contains("authentication failed")
+        || lower.contains("401")
+        || lower.contains("403")
+    {
+        return format!("AUTH: {}", summary);
+    }
+    if lower.contains("non-fast-forward") || lower.contains("fetch first") {
+        return "Push rejected (non-fast-forward). Fetch/pull first, then push again.".into();
+    }
+    summary
+}
+
+/// Build a `git` command for a network op in `dir`.
+/// Stored HTTPS creds are injected via a credential helper (user's own helpers
+/// still answer first); interactive prompts are disabled.
+fn git_base(dir: Option<&Path>, creds: &Credentials) -> Command {
+    let mut cmd = Command::new("git");
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    if let (Some(u), Some(p)) = (&creds.username, &creds.password) {
+        cmd.env("GIT_CRACKIT_USER", u)
+            .env("GIT_CRACKIT_PASS", p)
+            .arg("-c")
+            .arg("credential.helper=!f() { echo \"username=$GIT_CRACKIT_USER\"; echo \"password=$GIT_CRACKIT_PASS\"; }; f");
+    }
+    cmd
+}
+
+/// Run `git <args>` in `dir` for a network op (fetch/push). Returns combined output.
+pub fn git_net(dir: &Path, creds: &Credentials, args: &[&str]) -> Result<String, String> {
+    let out = git_base(Some(dir), creds)
+        .args(args)
+        .output()
+        .map_err(|_| "SSH remotes require the `git` CLI to be installed.".to_string())?;
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if out.status.success() {
+        Ok(format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr))
+    } else {
+        Err(map_git_err(&stderr))
+    }
+}
+
+/// `git clone` via CLI (SSH remotes) with live progress → `clone-progress` events.
+pub fn git_clone<R: Runtime>(
+    app: &AppHandle<R>,
+    url: &str,
+    dest: &Path,
+    creds: &Credentials,
+) -> Result<(), String> {
+    let mut cmd = git_base(None, creds);
+    cmd.arg("clone")
+        .arg("--progress")
+        .arg(url)
+        .arg(dest.as_os_str())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|_| "SSH remotes require the `git` CLI to be installed.".to_string())?;
+    let mut pipe = child.stderr.take().unwrap();
+
+    let app2 = app.clone();
+    let dest_s = dest.to_string_lossy().to_string();
+    let reader = std::thread::spawn(move || {
+        // Progress updates arrive separated by \r, so read bytes not lines.
+        let mut log = String::new();
+        let mut seg: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = match pipe.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            for &b in &buf[..n] {
+                if b == b'\r' || b == b'\n' {
+                    let line = String::from_utf8_lossy(&seg).trim_end().to_string();
+                    seg.clear();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Some(pos) = line.find("Receiving objects:") {
+                        if let Some((r, t)) = parse_ratio(&line[pos..]) {
+                            let _ = app2.emit(
+                                "clone-progress",
+                                OpProgress {
+                                    op: "clone".into(),
+                                    received: r,
+                                    total: t,
+                                    path: dest_s.clone(),
+                                },
+                            );
+                        }
+                    }
+                    log.push_str(&line);
+                    log.push('\n');
+                } else {
+                    seg.push(b);
+                }
+            }
+        }
+        log
+    });
+
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let log = reader.join().unwrap_or_default();
+    if status.success() {
+        Ok(())
+    } else {
+        Err(map_git_err(&log))
+    }
+}
+
+/// Parse `(received/total)` out of a git progress line.
+fn parse_ratio(s: &str) -> Option<(usize, usize)> {
+    let open = s.find('(')?;
+    let close = s.find(')')?;
+    let (a, b) = s[open + 1..close].split_once('/')?;
+    Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+}
+
+/// Directory to run `git` in for `repo` (worktree root, or the git dir for bare repos).
+pub fn repo_dir(repo: &Repository) -> &Path {
+    repo.workdir().unwrap_or_else(|| repo.path())
+}
+
+/// Whether the `git-lfs` CLI is installed.
+pub fn lfs_available() -> bool {
+    Command::new("git")
+        .args(["lfs", "version"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// True when the repo's attributes enable the LFS smudge filter.
+pub fn repo_uses_lfs(repo: &Repository) -> bool {
+    let content = repo
+        .workdir()
+        .and_then(|d| std::fs::read_to_string(d.join(".gitattributes")).ok())
+        .or_else(|| std::fs::read_to_string(repo.path().join("info/attributes")).ok());
+    content.map(|c| c.contains("filter=lfs")).unwrap_or(false)
+}
+
+/// `git lfs pull` — download LFS objects and smudge the worktree (post clone/fetch/merge).
+pub fn lfs_pull(repo: &Repository, creds: &Credentials) {
+    if repo_uses_lfs(repo) && lfs_available() {
+        let _ = git_net(repo_dir(repo), creds, &["lfs", "pull"]);
+    }
+}
+
+/// `git lfs checkout` — smudge the worktree after a checkout (local, no network).
+pub fn lfs_checkout(repo: &Repository) {
+    if repo_uses_lfs(repo) && lfs_available() {
+        let _ = git_net(repo_dir(repo), &Credentials::default(), &["lfs", "checkout"]);
+    }
 }
 
 /// Credentials callback for network ops (HTTPS user/pass-token).

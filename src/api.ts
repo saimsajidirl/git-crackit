@@ -3,6 +3,7 @@ import type {
   RepoInfo, FileChange, CommitInfo, CommitDetail, FileDiff, BranchInfo,
   RemoteInfo, StashInfo, TagInfo, MergeResult, BlameHunkInfo, SubmoduleInfo,
   GitConfigInfo, RecentRepos, CredentialStatus,
+  GhRepo, GhUser, GhPR, GhIssue, GhCheckStatus, DeviceFlow, DevicePoll, ImageDiff,
 } from "./types";
 
 export const api = {
@@ -30,6 +31,8 @@ export const api = {
     invoke<string>("create_commit", { message, amend }),
   getWorkingDiff: (path: string, staged: boolean) =>
     invoke<FileDiff>("get_working_diff", { path, staged }),
+  getImageDiff: (path: string, staged: boolean) =>
+    invoke<ImageDiff>("get_image_diff", { path, staged }),
   listSubmodules: () => invoke<SubmoduleInfo[]>("list_submodules"),
   updateSubmodules: () => invoke<void>("update_submodules"),
   ignoreFile: (path: string) => invoke<void>("ignore_file", { path }),
@@ -59,6 +62,8 @@ export const api = {
   mergeBranch: (name: string) => invoke<MergeResult>("merge_branch", { name }),
   abortMerge: () => invoke<void>("abort_merge"),
   rebaseBranch: (onto: string) => invoke<MergeResult>("rebase_branch", { onto }),
+  rebaseCommitAction: (oid: string, target: string, action: "move_after" | "squash_into") =>
+    invoke<MergeResult>("rebase_commit_action", { oid, target, action }),
 
   listRemotes: () => invoke<RemoteInfo[]>("list_remotes"),
   addRemote: (name: string, url: string) => invoke<void>("add_remote", { name, url }),
@@ -73,6 +78,15 @@ export const api = {
   pushTag: (name: string, remote?: string) => invoke<void>("push_tag", { name, remote }),
   setBranchUpstream: (branch: string, upstream: string) =>
     invoke<void>("set_branch_upstream", { branch, upstream }),
+  fetchPrBranch: (number: number) => invoke<string>("fetch_pr_branch", { number }),
+
+  githubRepo: () => invoke<GhRepo | null>("github_repo"),
+  githubUser: () => invoke<GhUser>("github_user"),
+  githubPrs: () => invoke<GhPR[]>("github_prs"),
+  githubIssues: () => invoke<GhIssue[]>("github_issues"),
+  githubCheckRuns: (sha: string) => invoke<GhCheckStatus>("github_check_runs", { sha }),
+  githubDeviceStart: () => invoke<DeviceFlow>("github_device_start"),
+  githubDevicePoll: (deviceCode: string) => invoke<DevicePoll>("github_device_poll", { deviceCode }),
 
   listStashes: () => invoke<StashInfo[]>("list_stashes"),
   stashSave: (message: string, includeUntracked: boolean) =>

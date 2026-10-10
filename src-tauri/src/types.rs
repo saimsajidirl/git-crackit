@@ -12,6 +12,8 @@ pub struct RepoInfo {
     pub upstream: Option<String>,
     pub is_unborn: bool,
     pub remotes: Vec<String>,
+    pub uses_lfs: bool,
+    pub lfs_installed: bool,
 }
 
 #[derive(Serialize)]
@@ -158,6 +160,13 @@ pub struct SubmoduleInfo {
 }
 
 #[derive(Serialize)]
+pub struct ImageDiff {
+    pub old: Option<String>,
+    pub new: Option<String>,
+    pub mime: String,
+}
+
+#[derive(Serialize)]
 pub struct GitConfigInfo {
     pub name: Option<String>,
     pub email: Option<String>,
@@ -174,4 +183,73 @@ pub struct CredentialStatus {
     pub username: Option<String>,
     pub has_password: bool,
     pub remembered: bool,
+}
+
+#[derive(Serialize, Clone)]
+pub struct GhRepo {
+    pub owner: String,
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Serialize)]
+pub struct GhUser {
+    pub login: String,
+    pub name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct GhPR {
+    pub number: u64,
+    pub title: String,
+    pub author: String,
+    pub avatar_url: Option<String>,
+    pub head_ref: String,
+    pub head_sha: String,
+    pub base_ref: String,
+    pub draft: bool,
+    pub html_url: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize)]
+pub struct GhLabel {
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Serialize)]
+pub struct GhIssue {
+    pub number: u64,
+    pub title: String,
+    pub author: String,
+    pub avatar_url: Option<String>,
+    pub labels: Vec<GhLabel>,
+    pub comments: u64,
+    pub html_url: String,
+    pub created_at: String,
+}
+
+#[derive(Serialize)]
+pub struct GhCheckStatus {
+    /// "success" | "failure" | "pending" | "none"
+    pub status: String,
+    pub total: usize,
+    pub failed: usize,
+}
+
+#[derive(Serialize)]
+pub struct DeviceFlow {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub interval: u64,
+}
+
+#[derive(Serialize)]
+pub struct DevicePoll {
+    /// "pending" | "slow_down" | "expired" | "authorized"
+    pub status: String,
+    pub token: Option<String>,
 }

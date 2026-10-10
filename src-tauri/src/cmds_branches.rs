@@ -152,7 +152,9 @@ fn checkout_branch_inner(repo: &git2::Repository, name: &str) -> Result<(), Stri
 #[tauri::command]
 pub fn checkout_branch(state: State<AppState>, name: String) -> Result<(), String> {
     let repo = open_repo(&state)?;
-    checkout_branch_inner(&repo, &name)
+    checkout_branch_inner(&repo, &name)?;
+    lfs_checkout(&repo);
+    Ok(())
 }
 
 #[tauri::command]
@@ -200,12 +202,118 @@ pub fn merge_branch(state: State<AppState>, name: String) -> Result<MergeResult,
 #[tauri::command]
 pub fn abort_merge(state: State<AppState>) -> Result<(), String> {
     let repo = open_repo(&state)?;
+    // A CLI-started rebase (drag-drop reorder/squash) must be aborted via git.
+    if matches!(
+        repo.state(),
+        git2::RepositoryState::Rebase
+            | git2::RepositoryState::RebaseInteractive
+            | git2::RepositoryState::RebaseMerge
+            | git2::RepositoryState::ApplyMailbox
+            | git2::RepositoryState::ApplyMailboxOrRebase
+    ) {
+        let dir = repo_dir(&repo).to_path_buf();
+        let st = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(["rebase", "--abort"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !st.status.success() {
+            return Err(String::from_utf8_lossy(&st.stderr).trim().to_string());
+        }
+        return Ok(());
+    }
     let mut cb = git2::build::CheckoutBuilder::new();
     cb.force();
     repo.checkout_head(Some(&mut cb))
         .map_err(|e| e.message().to_string())?;
     repo.cleanup_state().map_err(|e| e.message().to_string())?;
     Ok(())
+}
+
+/// Reorder/squash a commit by driving `git rebase -i` with a generated
+/// sequence-editor script. `action`: "move_after" | "squash_into".
+/// On conflict the rebase pauses and repo state becomes "rebasing" —
+/// resolve, stage, commit, or Abort.
+#[tauri::command]
+pub fn rebase_commit_action(
+    state: State<AppState>,
+    oid: String,
+    target: String,
+    action: String,
+) -> Result<MergeResult, String> {
+    let repo = open_repo(&state)?;
+    let commit_oid = git2::Oid::from_str(&oid).map_err(|e| e.message().to_string())?;
+    let commit = repo
+        .find_commit(commit_oid)
+        .map_err(|e| e.message().to_string())?;
+    let parent = commit.parent(0).ok().map(|p| p.id().to_string());
+    let act = if action == "squash_into" { "fixup" } else { "pick" };
+
+    // Sequence editor: rewrite the todo file — drop `move` line, re-emit it
+    // (with action `act`) right after the `after` line.
+    let script = r#"#!/bin/sh
+awk -v move="$GC_MOVE" -v after="$GC_AFTER" -v act="$GC_ACTION" '
+{ lines[NR] = $0 }
+END {
+  mi = 0
+  for (i = 1; i <= NR; i++) {
+    split(lines[i], a, " ")
+    if (a[1] == "pick" && index(move, a[2]) == 1) { mi = i; break }
+  }
+  if (mi == 0) { print "commit not found in rebase todo" > "/dev/stderr"; exit 1 }
+  ml = act substr(lines[mi], index(lines[mi], " "))
+  done = 0
+  for (i = 1; i <= NR; i++) {
+    if (i == mi) continue
+    print lines[i]
+    split(lines[i], a, " ")
+    if (!done && index(after, a[2]) == 1) { print ml; done = 1 }
+  }
+  if (!done) { print "target not found in rebase todo" > "/dev/stderr"; exit 1 }
+}' "$1"
+"#;
+    let script_dir = dirs::config_dir()
+        .map(|d| d.join("git-crackit"))
+        .unwrap_or_else(|| std::env::temp_dir());
+    std::fs::create_dir_all(&script_dir).map_err(|e| e.to_string())?;
+    let script_path = script_dir.join(format!("seq-edit-{}.sh", std::process::id()));
+    std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+    }
+
+    let dir = repo_dir(&repo).to_path_buf();
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(&dir)
+        .env("GIT_SEQUENCE_EDITOR", format!("sh {}", script_path.display()))
+        .env("GIT_EDITOR", "true")
+        .env("GC_MOVE", &oid)
+        .env("GC_AFTER", &target)
+        .env("GC_ACTION", act);
+    match parent {
+        Some(p) => cmd.args(["rebase", "-i", &p]),
+        None => cmd.args(["rebase", "-i", "--root"]),
+    };
+    let out = cmd.output().map_err(|e| format!("git not found: {}", e))?;
+    let _ = std::fs::remove_file(&script_path);
+
+    if out.status.success() {
+        lfs_checkout(&repo);
+        return Ok(MergeResult {
+            status: "merged".into(),
+            conflicts: vec![],
+        });
+    }
+    // Rebase may have stopped on a conflict — leave state for resolve/abort flow.
+    if !matches!(repo.state(), git2::RepositoryState::Clean) {
+        return Ok(MergeResult {
+            status: "conflicts".into(),
+            conflicts: conflicts_list(&repo),
+        });
+    }
+    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
 }
 
 #[tauri::command]

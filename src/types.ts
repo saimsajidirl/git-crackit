@@ -9,6 +9,8 @@ export interface RepoInfo {
   upstream: string | null;
   is_unborn: boolean;
   remotes: string[];
+  uses_lfs: boolean;
+  lfs_installed: boolean;
 }
 
 export interface FileChange {
@@ -138,6 +140,12 @@ export interface SubmoduleInfo {
   url: string | null;
 }
 
+export interface ImageDiff {
+  old: string | null;
+  new: string | null;
+  mime: string;
+}
+
 export interface GitConfigInfo {
   name: string | null;
   email: string | null;
@@ -152,4 +160,63 @@ export interface CredentialStatus {
   username: string | null;
   has_password: boolean;
   remembered: boolean;
+}
+
+export interface GhRepo {
+  owner: string;
+  name: string;
+  url: string;
+}
+
+export interface GhUser {
+  login: string;
+  name: string | null;
+  avatar_url: string | null;
+}
+
+export interface GhPR {
+  number: number;
+  title: string;
+  author: string;
+  avatar_url: string | null;
+  head_ref: string;
+  head_sha: string;
+  base_ref: string;
+  draft: boolean;
+  html_url: string;
+  updated_at: string;
+}
+
+export interface GhLabel {
+  name: string;
+  color: string;
+}
+
+export interface GhIssue {
+  number: number;
+  title: string;
+  author: string;
+  avatar_url: string | null;
+  labels: GhLabel[];
+  comments: number;
+  html_url: string;
+  created_at: string;
+}
+
+export interface GhCheckStatus {
+  status: "success" | "failure" | "pending" | "none" | string;
+  total: number;
+  failed: number;
+}
+
+export interface DeviceFlow {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  interval: number;
+}
+
+export interface DevicePoll {
+  status: "pending" | "slow_down" | "expired" | "authorized" | string;
+  token: string | null;
 }

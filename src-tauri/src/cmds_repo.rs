@@ -80,6 +80,8 @@ pub fn repo_info(repo: &Repository, path: &Path) -> Result<RepoInfo, String> {
         upstream,
         is_unborn,
         remotes,
+        uses_lfs: repo_uses_lfs(repo),
+        lfs_installed: lfs_available(),
     })
 }
 
@@ -126,32 +128,39 @@ pub fn clone_repository<R: Runtime>(
     dest: String,
 ) -> Result<RepoInfo, String> {
     let creds = get_creds(&state);
-    let mut cb = remote_callbacks(creds);
-    let app2 = app.clone();
-    let dest2 = dest.clone();
-    cb.transfer_progress(move |p| {
-        let _ = app2.emit(
-            "clone-progress",
-            OpProgress {
-                op: "clone".into(),
-                received: p.received_objects(),
-                total: p.total_objects(),
-                path: dest2.clone(),
-            },
-        );
-        true
-    });
-
-    let mut fo = FetchOptions::new();
-    fo.remote_callbacks(cb);
-
-    let mut builder = git2::build::RepoBuilder::new();
-    builder.fetch_options(fo);
-
     let dest_path = PathBuf::from(&dest);
-    let repo = builder
-        .clone(&url, &dest_path)
-        .map_err(|e| e.message().to_string())?;
+    let repo = if is_ssh_url(&url) {
+        // SSH transport: shell out to `git` (uses user's ssh-agent/config).
+        git_clone(&app, &url, &dest_path, &creds)?;
+        Repository::open(&dest_path).map_err(|e| e.message().to_string())?
+    } else {
+        let mut cb = remote_callbacks(creds);
+        let app2 = app.clone();
+        let dest2 = dest.clone();
+        cb.transfer_progress(move |p| {
+            let _ = app2.emit(
+                "clone-progress",
+                OpProgress {
+                    op: "clone".into(),
+                    received: p.received_objects(),
+                    total: p.total_objects(),
+                    path: dest2.clone(),
+                },
+            );
+            true
+        });
+
+        let mut fo = FetchOptions::new();
+        fo.remote_callbacks(cb);
+
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.fetch_options(fo);
+
+        builder
+            .clone(&url, &dest_path)
+            .map_err(|e| e.message().to_string())?
+    };
+    lfs_pull(&repo, &get_creds(&state));
 
     let info = repo_info(&repo, &dest_path)?;
     *state.repo_path.lock().map_err(|e| e.to_string())? = Some(dest_path.clone());
@@ -225,7 +234,7 @@ pub fn get_credentials(state: State<AppState>) -> Result<CredentialStatus, Strin
     Ok(CredentialStatus {
         username: creds.username,
         has_password: creds.password.is_some(),
-        remembered: state::load_persisted().credentials.is_some(),
+        remembered: state::credentials_remembered(),
     })
 }
 

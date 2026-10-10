@@ -111,3 +111,19 @@ fn status_diff_merge_flow() {
     .unwrap();
     assert_eq!(n, 1);
 }
+
+#[test]
+fn ssh_url_detection() {
+    use git_crackit::helpers::is_ssh_url;
+    assert!(is_ssh_url("git@github.com:user/repo.git"));
+    assert!(is_ssh_url("ssh://git@github.com/user/repo.git"));
+    assert!(is_ssh_url("git+ssh://git@host/repo.git"));
+    assert!(is_ssh_url("deploy@myserver.net:var/repo.git"));
+    assert!(is_ssh_url("myserver.net:repo.git"));
+    assert!(!is_ssh_url("https://github.com/user/repo.git"));
+    assert!(!is_ssh_url("http://github.com/user/repo.git"));
+    assert!(!is_ssh_url("file:///path/to/repo"));
+    assert!(!is_ssh_url("/home/user/repo"));
+    assert!(!is_ssh_url("../relative/repo"));
+    assert!(!is_ssh_url("C:\\Users\\me\\repo"));
+}

@@ -24,12 +24,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset:; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://avatars.githubusercontent.com; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,5 +38,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUwNjJDQkE1RjYwQUQ3N0IKUldSNzF3cjJwY3RpNEFqYkFOQ2hWUWVEc0V0dll3Z3BMdkYrdi8wWmVxeGRrdzFmeWYyMHpiZHUK",
+      "endpoints": [
+        "https://github.com/saimsajidirl/git-crackit/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

@@ -19,7 +19,7 @@ import { CommandPalette, type Command } from "./components/CommandPalette";
 import {
   CloneDialog, InitDialog, ConfirmDialog, NewBranchDialog, PickBranchDialog,
   RenameBranchDialog, StashDialog, TagsDialog, RemotesDialog, SettingsDialog,
-  CredentialsDialog, SubmodulesDialog,
+  CredentialsDialog, SubmodulesDialog, PullRequestsDialog, IssuesDialog,
 } from "./components/Dialogs";
 
 type Dialog =
@@ -33,6 +33,8 @@ type Dialog =
   | { kind: "tags"; target?: string }
   | { kind: "remotes" }
   | { kind: "submodules" }
+  | { kind: "prs" }
+  | { kind: "issues" }
   | { kind: "settings" }
   | { kind: "credentials" }
   | { kind: "confirm"; title: string; message: React.ReactNode; confirmLabel?: string; danger?: boolean; onConfirm: () => void };
@@ -363,6 +365,35 @@ export default function App() {
     });
   };
 
+  /** Dragging a commit onto another commit: cherry-pick / reorder / squash. */
+  const commitDrop = (oid: string, target: string, x: number, y: number) => {
+    const c = commits.find((v) => v.oid === oid);
+    const t = commits.find((v) => v.oid === target);
+    if (!c || !t) return;
+    const rewrite = (action: "move_after" | "squash_into", label: string) =>
+      setDialog({
+        kind: "confirm",
+        title: label,
+        message: (
+          <>
+            {label} — this rewrites commits after <code>{t.short_id}</code>. If <b>{repo?.head}</b> is
+            already pushed you will need to force-push. Continue?
+          </>
+        ),
+        confirmLabel: label.split(" ")[0],
+        onConfirm: () => run("Rewriting history…", () => api.rebaseCommitAction(oid, target, action)),
+      });
+    setMenu({
+      x,
+      y,
+      items: [
+        { label: `Cherry-pick ${c.short_id} onto ${repo?.head ?? "HEAD"}`, onClick: () => run("Cherry-picking…", () => api.cherryPick(oid)) },
+        { label: `Move ${c.short_id} after ${t.short_id}…`, onClick: () => rewrite("move_after", `Move commit ${c.short_id}`) },
+        { label: `Squash ${c.short_id} into ${t.short_id}…`, onClick: () => rewrite("squash_into", `Squash commit ${c.short_id}`) },
+      ],
+    });
+  };
+
   const branchMenu = (e: React.MouseEvent, b: BranchInfo) => {
     e.preventDefault();
     const items: MenuItem[] = [];
@@ -424,6 +455,8 @@ export default function App() {
         if (!b.is_head && !b.is_remote) add("Checkout", b.name, () => checkout(b.name), "branch");
       }
       add("Settings", "Remotes…", () => setDialog({ kind: "remotes" }), "globe");
+      add("GitHub", "Pull requests…", () => setDialog({ kind: "prs" }), "merge");
+      add("GitHub", "Issues…", () => setDialog({ kind: "issues" }), "alert");
       add("Settings", "Submodules…", () => setDialog({ kind: "submodules" }), "repo");
       add("Settings", "Repository settings…", () => setDialog({ kind: "settings" }), "gear");
       add("Settings", "HTTPS credentials…", () => setDialog({ kind: "credentials" }), "cloud");
@@ -462,6 +495,8 @@ export default function App() {
         onRemotes={() => setDialog({ kind: "remotes" })}
         onSettings={() => setDialog({ kind: "settings" })}
         onCredentials={() => setDialog({ kind: "credentials" })}
+        onPullRequests={() => setDialog({ kind: "prs" })}
+        onIssues={() => setDialog({ kind: "issues" })}
         onCloseRepo={() => run("Closing…", async () => { await api.closeRepository(); setRepo(null); setChanges([]); setCommits([]); setDetail(null); setSelFile(null); }, { refresh: false })}
         onRemoveRecent={(p) => { api.removeRecentRepository(p).then(loadRecent); }}
         onBranchContext={branchMenu}
@@ -488,6 +523,14 @@ export default function App() {
               <button className="icon-btn" onClick={() => setNotice(null)}><Icon name="x" size={12} /></button>
             </div>
           )}
+        </div>
+      )}
+      {repo && repo.uses_lfs && !repo.lfs_installed && (
+        <div className="banner warn">
+          <Icon name="alert" size={14} />
+          <span className="grow">
+            This repository uses <b>Git LFS</b> but <code>git-lfs</code> isn't installed — large files will appear as pointer text files. Install it to fetch real contents.
+          </span>
         </div>
       )}
       {repo && repo.state !== "clean" && (
@@ -555,6 +598,7 @@ export default function App() {
                 headOid={headOid}
                 onSelect={selectCommit}
                 onContextMenu={commitMenu}
+                onCommitDrop={commitDrop}
                 onSearch={(q) => { setQuery(q); loadHistory(q, true); }}
                 onLoadMore={loadMore}
                 hasMore={hasMore}
@@ -582,7 +626,7 @@ export default function App() {
                 </div>
               </div>
             ) : tab === "changes" ? (
-              <DiffView diff={workDiff} />
+              <DiffView diff={workDiff} staged={selFile?.staged ?? false} />
             ) : (
               <CommitDetailView detail={detail} onError={setError} />
             )}
@@ -655,6 +699,21 @@ export default function App() {
       {dialog?.kind === "stash" && <StashDialog onClose={() => setDialog(null)} onChanged={refreshAll} onError={setError} />}
       {dialog?.kind === "tags" && <TagsDialog onClose={() => setDialog(null)} onChanged={refreshAll} onError={setError} initialTarget={dialog.target} />}
       {dialog?.kind === "submodules" && <SubmodulesDialog onClose={() => setDialog(null)} onChanged={refreshAll} onError={setError} />}
+      {dialog?.kind === "prs" && (
+        <PullRequestsDialog
+          onClose={() => setDialog(null)}
+          onError={setError}
+          onCheckout={(b) => run(`Checking out ${b}…`, () => api.checkoutBranch(b))}
+          onSignIn={() => setDialog({ kind: "credentials" })}
+        />
+      )}
+      {dialog?.kind === "issues" && (
+        <IssuesDialog
+          onClose={() => setDialog(null)}
+          onError={setError}
+          onSignIn={() => setDialog({ kind: "credentials" })}
+        />
+      )}
       {dialog?.kind === "remotes" && <RemotesDialog onClose={() => setDialog(null)} onChanged={refreshAll} onError={setError} />}
       {dialog?.kind === "settings" && <SettingsDialog onClose={() => setDialog(null)} onError={setError} />}
       {dialog?.kind === "credentials" && (

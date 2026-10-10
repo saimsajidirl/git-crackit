@@ -1,9 +1,67 @@
 use crate::helpers::*;
 use crate::state::AppState;
 use crate::types::*;
+use base64::Engine;
 use git2::{DiffOptions, Status, StatusOptions};
 use std::path::Path;
 use tauri::State;
+
+fn image_mime(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        _ => "application/octet-stream",
+    }
+}
+
+fn data_url(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{};base64,{}", mime, base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// Old (HEAD) vs new (index if `staged`, else worktree) image contents as data URLs.
+#[tauri::command]
+pub fn get_image_diff(state: State<AppState>, path: String, staged: bool) -> Result<ImageDiff, String> {
+    let repo = open_repo(&state)?;
+    let rel = Path::new(&path);
+    let mime = image_mime(&path);
+
+    let old = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_tree().ok())
+        .and_then(|t| t.get_path(rel).ok())
+        .and_then(|e| e.to_object(&repo).ok())
+        .and_then(|o| o.peel_to_blob().ok())
+        .map(|b| data_url(mime, b.content()));
+
+    let new = if staged {
+        repo.index()
+            .ok()
+            .and_then(|idx| idx.get_path(rel, 0).map(|e| e.id))
+            .and_then(|oid| repo.find_blob(oid).ok())
+            .map(|b| data_url(mime, b.content()))
+    } else {
+        workdir(&repo)
+            .ok()
+            .and_then(|d| std::fs::read(d.join(rel)).ok())
+            .map(|b| data_url(mime, &b))
+    };
+
+    if old.is_none() && new.is_none() {
+        return Err("No image data".to_string());
+    }
+    Ok(ImageDiff {
+        old,
+        new,
+        mime: mime.to_string(),
+    })
+}
 
 #[tauri::command]
 pub fn get_status(state: State<AppState>) -> Result<Vec<FileChange>, String> {

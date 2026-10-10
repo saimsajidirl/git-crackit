@@ -31,6 +31,9 @@ export function ChangesPanel({
   repoState,
   isUnborn,
   busy,
+  onGenerateMessage,
+  onAiSetup,
+  onError,
 }: {
   changes: FileChange[];
   selected: FileSelection | null;
@@ -53,11 +56,40 @@ export function ChangesPanel({
   repoState: string;
   isUnborn: boolean;
   busy: string | null;
+  onGenerateMessage?: () => Promise<string>;
+  onAiSetup?: () => void;
+  onError?: (m: string) => void;
 }) {
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
   const [amend, setAmend] = useState(false);
   const [kebabOpen, setKebabOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+
+  const genMessage = async () => {
+    if (!onGenerateMessage) return;
+    setAiBusy(true);
+    try {
+      const msg = (await onGenerateMessage())?.trim();
+      if (!msg) {
+        onError?.("AI returned an empty message — try again or pick a different provider.");
+        return;
+      }
+      const split = msg.indexOf("\n\n");
+      if (split === -1) {
+        setSummary(msg.replace(/\n/g, " ").trim());
+      } else {
+        setSummary(msg.slice(0, split).replace(/\n/g, " ").trim());
+        setDescription(msg.slice(split).trim());
+      }
+    } catch (e) {
+      const m = String(e);
+      if (m.startsWith("AI_CFG:")) onAiSetup?.();
+      else onError?.(m);
+    } finally {
+      setAiBusy(false);
+    }
+  };
 
   const conflicts = changes.filter((c) => c.conflicted);
   const normal = changes.filter((c) => !c.conflicted);
@@ -209,17 +241,30 @@ export function ChangesPanel({
       <div className="commit-box">
         <div className="commit-box-inner">
           <div className="summary-wrap">
-            <input
-              className="input"
-              placeholder={isUnborn ? "Summary (required) — first commit" : "Summary (required)"}
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.ctrlKey || e.metaKey || !e.shiftKey)) doCommit();
-              }}
-            />
-            {summary.length > 0 && (
-              <span className={cx("char-count", summary.length > 72 && "over")}>{72 - summary.length}</span>
+            <div className="summary-field">
+              <input
+                className="input"
+                placeholder={isUnborn ? "Summary (required) — first commit" : "Summary (required)"}
+                value={summary}
+                onChange={(e) => setSummary(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey || !e.shiftKey)) doCommit();
+                }}
+              />
+              {summary.length > 0 && (
+                <span className={cx("char-count", summary.length > 72 && "over")}>{72 - summary.length}</span>
+              )}
+            </div>
+            {onGenerateMessage && (
+              <button
+                className="ai-gen-btn"
+                title={stagedCount === 0 ? "Stage files, then generate an AI commit message" : "Generate commit message from staged diff (AI)"}
+                aria-label="Generate commit message"
+                disabled={aiBusy || stagedCount === 0}
+                onClick={genMessage}
+              >
+                <Icon name="sparkle" size={17} className={aiBusy ? "spin" : ""} />
+              </button>
             )}
           </div>
           <textarea

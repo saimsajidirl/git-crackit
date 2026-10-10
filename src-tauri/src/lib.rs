@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod cmds_branches;
 pub mod cmds_files;
 pub mod cmds_history;
@@ -34,6 +35,10 @@ pub fn run() {
             cmds_repo::open_external_url,
             cmds_repo::list_ssh_keys,
             cmds_repo::load_ssh_key,
+            ai::get_ai_settings,
+            ai::set_ai_settings,
+            ai::list_ollama_models,
+            ai::generate_commit_message,
             // working tree / files
             cmds_files::get_status,
             cmds_files::stage_files,

@@ -13,6 +13,9 @@ bundle.
 **Working tree**
 - Stage/unstage/discard per file or in bulk, conflict resolution flow, amend,
   .gitignore editing, per-file blame view
+- **AI commit messages** — sparkle button writes a message from the staged
+  diff via Pollinations (free, no key), local Ollama, or any custom
+  OpenAI-compatible endpoint (Settings → Git settings)
 - **Image diffs** — side-by-side before/after previews for png/jpg/gif/webp/bmp/ico/svg/avif
 - **Stashes** — a persistent sidebar section: expand a stash to browse its files
   (including untracked), view read-only diffs, apply / pop / drop

@@ -26,6 +26,8 @@ export interface ToolbarProps {
   onSettings: () => void;
   onCredentials: () => void;
   onSshKeys: () => void;
+  onAiKeys: () => void;
+  onAbout: () => void;
   onCheckUpdates: () => void;
   onPullRequests: () => void;
   onIssues: () => void;
@@ -268,12 +270,19 @@ export function Toolbar(p: ToolbarProps) {
               <button className="menu-item" onClick={() => { close(); p.onSshKeys(); }}>
                 <Icon name="cloud" size={14} /> SSH keys…
               </button>
+              <button className="menu-item" onClick={() => { close(); p.onAiKeys(); }}>
+                <Icon name="sparkle" size={14} /> AI keys…
+              </button>
               <div className="menu-separator" />
               <button className="menu-item" onClick={() => { close(); p.onSettings(); }}>
                 <Icon name="gear" size={14} /> Git settings…
               </button>
               <button className="menu-item" onClick={() => { close(); p.onCheckUpdates(); }}>
                 <Icon name="download" size={14} /> Check for updates…
+              </button>
+              <div className="menu-separator" />
+              <button className="menu-item" onClick={() => { close(); p.onAbout(); }}>
+                <Icon name="sparkle" size={14} /> About Git Crackit
               </button>
             </Dropdown>
           </ToolbarButton>

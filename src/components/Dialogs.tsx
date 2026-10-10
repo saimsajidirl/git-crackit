@@ -351,34 +351,108 @@ export function RemotesDialog({ onClose, onChanged, onError }: { onClose: () => 
 }
 
 /* ---------------- Settings (git identity) ---------------- */
-export function SettingsDialog({ onClose, onError }: { onClose: () => void; onError: (m: string) => void }) {
+export function SettingsDialog({ aiOnly, onClose, onError }: { aiOnly?: boolean; onClose: () => void; onError: (m: string) => void }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [global, setGlobal] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [aiProvider, setAiProvider] = useState("auto");
+  const [aiModel, setAiModel] = useState("");
+  const [aiBase, setAiBase] = useState("");
+  const [aiKey, setAiKey] = useState("");
+  const [aiKeyed, setAiKeyed] = useState<string[]>([]);
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const KEY_PROVIDERS = ["anthropic", "openai", "groq", "custom"];
+  const KEY_URLS: Record<string, string> = {
+    anthropic: "https://console.anthropic.com/settings/keys",
+    openai: "https://platform.openai.com/api-keys",
+    groq: "https://console.groq.com/keys",
+  };
+  const needsKey = KEY_PROVIDERS.includes(aiProvider);
+  const keySaved = aiKeyed.includes(aiProvider);
   useEffect(() => {
     api.getGitIdentity().then((c) => {
       setName(c.name ?? "");
       setEmail(c.email ?? "");
       setLoaded(true);
     }).catch((e) => onError(String(e)));
+    api.getAiSettings().then((s) => {
+      setAiProvider(s.provider);
+      setAiModel(s.model);
+      setAiBase(s.base_url);
+      setAiKeyed(s.keyed_providers);
+    }).catch(() => {});
   }, []);
+  useEffect(() => {
+    if (aiProvider === "ollama") api.listOllamaModels().then(setOllamaModels).catch(() => setOllamaModels([]));
+  }, [aiProvider]);
   return (
-    <Modal title="Git settings" onClose={onClose}>
-      <Field label="Name">
-        <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+    <Modal title={aiOnly ? "AI keys" : "Git settings"} onClose={onClose}>
+      {!aiOnly && (
+        <>
+          <Field label="Name">
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+          </Field>
+          <Field label="Email">
+            <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+          </Field>
+          <label className="amend-row">
+            <input type="checkbox" className="cb" checked={global} onChange={(e) => setGlobal(e.target.checked)} />
+            <span>Save globally (~/.gitconfig) instead of this repository</span>
+          </label>
+          <hr className="settings-sep" />
+        </>
+      )}
+      <div className="settings-title">AI commit messages</div>
+      <Field label="Provider">
+        <select className="input" value={aiProvider} onChange={(e) => setAiProvider(e.target.value)}>
+          <option value="auto">Auto — first saved key, else local Ollama</option>
+          <option value="anthropic">Claude (Anthropic)</option>
+          <option value="openai">OpenAI</option>
+          <option value="groq">Groq</option>
+          <option value="ollama">Ollama (local — diffs stay on this machine)</option>
+          <option value="custom">Custom OpenAI-compatible endpoint</option>
+        </select>
       </Field>
-      <Field label="Email">
-        <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
-      </Field>
-      <label className="amend-row">
-        <input type="checkbox" className="cb" checked={global} onChange={(e) => setGlobal(e.target.checked)} />
-        <span>Save globally (~/.gitconfig) instead of this repository</span>
-      </label>
+      {(aiProvider === "ollama" || aiProvider === "custom") && (
+        <Field label="Model">
+          <input className="input" list="gc-ai-models" value={aiModel} onChange={(e) => setAiModel(e.target.value)}
+            placeholder={aiProvider === "ollama" ? "qwen2.5-coder:3b" : "model name"} />
+          {aiProvider === "ollama" && <datalist id="gc-ai-models">{ollamaModels.map((m) => <option key={m} value={m} />)}</datalist>}
+        </Field>
+      )}
+      {KEY_PROVIDERS.includes(aiProvider) && aiProvider !== "custom" && (
+        <div className="hint">Always uses the cheapest model the provider offers — no picking needed.</div>
+      )}
+      {aiProvider === "custom" && (
+        <Field label="Base URL">
+          <input className="input" value={aiBase} onChange={(e) => setAiBase(e.target.value)} placeholder="https://api.example.com/v1" />
+        </Field>
+      )}
+      {needsKey && (
+        <Field label="API key">
+          <input className="input" type="password" value={aiKey} onChange={(e) => setAiKey(e.target.value)}
+            placeholder={keySaved ? "saved — enter to replace" : "paste your API key"} />
+          {KEY_URLS[aiProvider] && (
+            <button className="link-btn" onClick={() => api.openExternalUrl(KEY_URLS[aiProvider]).catch((e) => onError(String(e)))}>
+              Get a key →
+            </button>
+          )}
+        </Field>
+      )}
+      <div className="hint">
+        AI is used <b>only</b> for generating commit messages from your staged diff — nothing else.
+        Keys stay on this device in your OS keychain; they are never stored in the cloud or sent
+        anywhere except the chosen provider when you click ✦.
+      </div>
       <div className="modal-actions">
         <button className="btn" onClick={onClose}>Cancel</button>
         <button className="btn primary" disabled={!loaded} onClick={async () => {
-          try { await api.setGitIdentity(name.trim(), email.trim(), global); onClose(); } catch (e) { onError(String(e)); }
+          try {
+            if (!aiOnly) await api.setGitIdentity(name.trim(), email.trim(), global);
+            await api.setAiSettings(aiProvider, aiModel.trim(), aiBase.trim(), aiKey || null);
+            onClose();
+          } catch (e) { onError(String(e)); }
         }}>Save</button>
       </div>
     </Modal>
@@ -813,6 +887,67 @@ export function SshKeyDialog({ onClose, onLoaded, onError }: { onClose: () => vo
         <button className="btn primary" disabled={busy || !path.trim()} onClick={load}>
           {busy ? "Loading…" : "Load into agent"}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------------- About ---------------- */
+export function AboutDialog({ onClose, onError }: { onClose: () => void; onError: (m: string) => void }) {
+  const [version, setVersion] = useState("…");
+  useEffect(() => {
+    import("@tauri-apps/api/app").then((m) => m.getVersion()).then(setVersion).catch(() => setVersion("0.1.0"));
+  }, []);
+  const open = (url: string) => api.openExternalUrl(url).catch((e) => onError(String(e)));
+  return (
+    <Modal title="About Git Crackit" onClose={onClose} width={480}>
+      <div className="about-head">
+        <div className="about-mark"><Icon name="branch" size={22} /></div>
+        <div>
+          <div className="about-name">Git Crackit</div>
+          <div className="muted small">v{version} · Tauri 2 + Rust (git2) + React</div>
+        </div>
+      </div>
+      <p className="hint">
+        A fast, focused Git GUI — GitKraken-style power at a fraction of the weight,
+        with a visual identity of its own.
+      </p>
+      <div className="about-cols">
+        <div>
+          <div className="settings-title">Repositories</div>
+          <ul className="about-list">
+            <li>Open, init &amp; clone — HTTPS and SSH remotes</li>
+            <li>Live lane-graph history, search, commit details</li>
+            <li>Drag-drop cherry-pick / move / squash (merges preserved)</li>
+            <li>Stashes with browsable files &amp; diffs, tags, remotes</li>
+            <li>Submodules, blame, image diffs, Git LFS detection</li>
+          </ul>
+        </div>
+        <div>
+          <div className="settings-title">GitHub &amp; extras</div>
+          <ul className="about-list">
+            <li>PRs + CI status + one-click checkout, issues, avatars</li>
+            <li>OAuth device flow or token; OS-keychain credentials</li>
+            <li>AI commit messages (Claude / OpenAI / Groq / Ollama) —
+              auto-picks the cheapest model, no choosing needed</li>
+            <li>Auto-updates, command palette, light &amp; dark themes</li>
+          </ul>
+        </div>
+      </div>
+      <p className="hint">
+        AI is used <b>only</b> to draft commit messages from your staged diff — nothing else.
+        API keys live in your OS keychain on this device; they are never sent anywhere except
+        the chosen provider, and only when you click ✦.
+      </p>
+      <div className="modal-actions">
+        <button className="btn" onClick={() => open("https://github.com/saimsajidirl/git-crackit")}>
+          <Icon name="globe" size={13} /> Repository
+        </button>
+        <button className="btn" onClick={() => open("https://github.com/saimsajidirl/git-crackit/issues")}>
+          <Icon name="alert" size={13} /> Report an issue
+        </button>
+        <span className="grow" />
+        <button className="btn primary" onClick={onClose}>Close</button>
       </div>
     </Modal>
   );

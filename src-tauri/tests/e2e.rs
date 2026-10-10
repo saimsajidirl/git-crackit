@@ -248,3 +248,39 @@ fn ssh_remote_dispatches_to_git_cli() {
         "unexpected error: {}", err
     );
 }
+
+#[test]
+fn ai_generate_requires_staged_changes() {
+    let dir = "/tmp/git-crackit-ai-e2e";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+
+    let app = tauri::test::mock_app();
+    app.manage(AppState::default());
+    let handle = app.handle().clone();
+
+    cmds_repo::init_repository(handle.clone(), app.state(), dir.into(), Some(false)).unwrap();
+    std::fs::write(format!("{}/f.txt", dir), "hello").unwrap();
+
+    // Nothing staged → clear guard error before any provider call.
+    let err = git_crackit::ai::generate_commit_message(app.state()).unwrap_err();
+    assert!(err.contains("No staged changes"), "unexpected: {}", err);
+}
+
+#[test]
+#[ignore = "live network — run manually: cargo test --test e2e ai_live -- --ignored"]
+fn ai_live_generates_message() {
+    let dir = "/tmp/git-crackit-ai-live";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+    let app = tauri::test::mock_app();
+    app.manage(AppState::default());
+    let handle = app.handle().clone();
+    cmds_repo::init_repository(handle.clone(), app.state(), dir.into(), Some(false)).unwrap();
+    std::fs::write(format!("{}/f.txt", dir), "hello world\n").unwrap();
+    cmds_files::stage_files(app.state(), vec!["f.txt".into()]).unwrap();
+    match git_crackit::ai::generate_commit_message(app.state()) {
+        Ok(m) => println!("generated: {}", m),
+        Err(e) => println!("provider error (expected without keys/ollama): {}", e),
+    }
+}

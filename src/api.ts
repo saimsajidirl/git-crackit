@@ -3,7 +3,7 @@ import type {
   RepoInfo, FileChange, CommitInfo, CommitDetail, FileDiff, BranchInfo,
   RemoteInfo, StashInfo, StashFileInfo, TagInfo, MergeResult, BlameHunkInfo, SubmoduleInfo,
   GitConfigInfo, RecentRepos, CredentialStatus,
-  GhRepo, GhUser, GhPR, GhIssue, GhCheckStatus, DeviceFlow, DevicePoll, ImageDiff,
+  GhRepo, GhUser, GhPR, GhIssue, GhCheckStatus, DeviceFlow, DevicePoll, ImageDiff, AiSettingsInfo,
 } from "./types";
 
 export const api = {
@@ -21,6 +21,11 @@ export const api = {
   clearCredentials: () => invoke<void>("clear_credentials"),
   listSshKeys: () => invoke<string[]>("list_ssh_keys"),
   loadSshKey: (path: string, passphrase: string) => invoke<string>("load_ssh_key", { path, passphrase }),
+  getAiSettings: () => invoke<AiSettingsInfo>("get_ai_settings"),
+  setAiSettings: (provider: string, model: string, baseUrl: string, apiKey: string | null) =>
+    invoke<void>("set_ai_settings", { provider, model, baseUrl, apiKey }),
+  listOllamaModels: () => invoke<string[]>("list_ollama_models"),
+  generateCommitMessage: () => invoke<string>("generate_commit_message"),
   openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
 
   getStatus: () => invoke<FileChange[]>("get_status"),

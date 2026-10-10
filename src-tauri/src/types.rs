@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Clone)]
 pub struct RepoInfo {
@@ -258,4 +258,27 @@ pub struct DevicePoll {
     /// "pending" | "slow_down" | "expired" | "authorized"
     pub status: String,
     pub token: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct AiSettings {
+    /// "auto" | "anthropic" | "openai" | "groq" | "ollama" | "custom"
+    pub provider: String,
+    pub model: String,
+    pub base_url: String,
+    /// Per-provider key fallback when no OS keychain exists.
+    #[serde(default)]
+    pub keys: std::collections::BTreeMap<String, String>,
+    /// Legacy single-key field (pre-map); migrated on read.
+    #[serde(default)]
+    pub api_key: String,
+}
+
+#[derive(Serialize)]
+pub struct AiSettingsInfo {
+    pub provider: String,
+    pub model: String,
+    pub base_url: String,
+    /// Providers that have a stored API key (keychain or fallback).
+    pub keyed_providers: Vec<String>,
 }

@@ -30,6 +30,7 @@ pub struct PersistedState {
     pub recent: Vec<String>,
     pub last_repo: Option<String>,
     pub credentials: Option<Credentials>,
+    pub ai: Option<crate::types::AiSettings>,
 }
 
 fn state_file() -> Option<PathBuf> {
@@ -127,4 +128,18 @@ pub fn credentials_remembered() -> bool {
         .and_then(|e| e.get_password().ok())
         .is_some()
         || load_persisted().credentials.is_some()
+}
+
+/// AI commit-message settings — persisted in state.json. The optional
+/// `api_key` (custom provider only) follows the same tradeoff as the
+/// plaintext credential fallback; GitHub Models reuses the stored
+/// HTTPS/GitHub token and Ollama needs no key.
+pub fn load_ai() -> crate::types::AiSettings {
+    load_persisted().ai.unwrap_or_default()
+}
+
+pub fn save_ai(ai: &crate::types::AiSettings) {
+    let mut st = load_persisted();
+    st.ai = Some(ai.clone());
+    save_persisted(&st);
 }

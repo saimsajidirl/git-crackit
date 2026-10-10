@@ -19,7 +19,7 @@ import { CommandPalette, type Command } from "./components/CommandPalette";
 import {
   CloneDialog, InitDialog, ConfirmDialog, NewBranchDialog, PickBranchDialog,
   RenameBranchDialog, StashDialog, TagsDialog, RemotesDialog, SettingsDialog,
-  CredentialsDialog, SubmodulesDialog, PullRequestsDialog, IssuesDialog, SshKeyDialog,
+  CredentialsDialog, SubmodulesDialog, PullRequestsDialog, IssuesDialog, SshKeyDialog, AboutDialog,
 } from "./components/Dialogs";
 
 type Dialog =
@@ -35,9 +35,10 @@ type Dialog =
   | { kind: "submodules" }
   | { kind: "prs" }
   | { kind: "issues" }
-  | { kind: "settings" }
+  | { kind: "settings"; aiOnly?: boolean }
   | { kind: "credentials" }
   | { kind: "sshkey" }
+  | { kind: "about" }
   | { kind: "confirm"; title: string; message: React.ReactNode; confirmLabel?: string; danger?: boolean; onConfirm: () => void };
 
 const PAGE = 300;
@@ -77,8 +78,13 @@ export default function App() {
   const pendingRetry = useRef<(() => void) | null>(null);
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [palette, setPalette] = useState(false);
+  const [zoom, setZoom] = useState(() => parseFloat(localStorage.getItem("gc-zoom") || "1") || 1);
 
   useEffect(() => applyTheme(theme), [theme]);
+  useEffect(() => {
+    (document.documentElement.style as unknown as { zoom: string }).zoom = String(zoom);
+    localStorage.setItem("gc-zoom", String(zoom));
+  }, [zoom]);
   useEffect(() => {
     if (!notice) return;
     const t = window.setTimeout(() => setNotice(null), 4000);
@@ -274,6 +280,15 @@ export default function App() {
       } else if (mod && e.key === "2") {
         e.preventDefault();
         setTab("history");
+      } else if (mod && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        setZoom((z) => Math.min(2, Math.round((z + 0.1) * 10) / 10));
+      } else if (mod && e.key === "-") {
+        e.preventDefault();
+        setZoom((z) => Math.max(0.6, Math.round((z - 0.1) * 10) / 10));
+      } else if (mod && e.key === "0") {
+        e.preventDefault();
+        setZoom(1);
       }
     };
     window.addEventListener("focus", onFocus);
@@ -596,8 +611,13 @@ export default function App() {
       add("Settings", "Repository settings…", () => setDialog({ kind: "settings" }), "gear");
       add("Settings", "HTTPS credentials…", () => setDialog({ kind: "credentials" }), "cloud");
       add("Settings", "SSH keys…", () => setDialog({ kind: "sshkey" }), "cloud");
+      add("Settings", "AI keys…", () => setDialog({ kind: "settings", aiOnly: true }), "sparkle");
+      add("Settings", "About Git Crackit", () => setDialog({ kind: "about" }), "sparkle");
       add("Settings", "Refresh", refreshAll, "sync", "F5");
       add("App", "Check for updates…", () => checkUpdates(true), "download");
+      add("View", "Zoom in", () => setZoom((z) => Math.min(2, Math.round((z + 0.1) * 10) / 10)), "search", "Ctrl+=");
+      add("View", "Zoom out", () => setZoom((z) => Math.max(0.6, Math.round((z - 0.1) * 10) / 10)), "search", "Ctrl+-");
+      add("View", "Reset zoom", () => setZoom(1), "search", "Ctrl+0");
     }
     add("Appearance", theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
       () => setTheme((t) => (t === "dark" ? "light" : "dark")), theme === "dark" ? "sun" : "moon");
@@ -633,6 +653,8 @@ export default function App() {
         onSettings={() => setDialog({ kind: "settings" })}
         onCredentials={() => setDialog({ kind: "credentials" })}
         onSshKeys={() => setDialog({ kind: "sshkey" })}
+        onAiKeys={() => setDialog({ kind: "settings", aiOnly: true })}
+        onAbout={() => setDialog({ kind: "about" })}
         onCheckUpdates={() => checkUpdates(true)}
         onPullRequests={() => setDialog({ kind: "prs" })}
         onIssues={() => setDialog({ kind: "issues" })}
@@ -732,6 +754,9 @@ export default function App() {
                 onToggleStash={toggleStash}
                 onSelectStashFile={selectStashFile}
                 onStashContext={stashMenu}
+                onGenerateMessage={() => api.generateCommitMessage()}
+                onAiSetup={() => setDialog({ kind: "settings", aiOnly: true })}
+                onError={setError}
                 headName={headName}
                 repoState={repo.state}
                 isUnborn={repo.is_unborn}
@@ -872,7 +897,7 @@ export default function App() {
         />
       )}
       {dialog?.kind === "remotes" && <RemotesDialog onClose={() => setDialog(null)} onChanged={refreshAll} onError={setError} />}
-      {dialog?.kind === "settings" && <SettingsDialog onClose={() => setDialog(null)} onError={setError} />}
+      {dialog?.kind === "settings" && <SettingsDialog aiOnly={dialog.aiOnly} onClose={() => setDialog(null)} onError={setError} />}
       {dialog?.kind === "credentials" && (
         <CredentialsDialog
           onClose={() => setDialog(null)}
@@ -895,6 +920,7 @@ export default function App() {
           }}
         />
       )}
+      {dialog?.kind === "about" && <AboutDialog onClose={() => setDialog(null)} onError={setError} />}
       {dialog?.kind === "confirm" && (
         <ConfirmDialog
           title={dialog.title}

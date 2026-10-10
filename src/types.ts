@@ -225,3 +225,10 @@ export interface DevicePoll {
   status: "pending" | "slow_down" | "expired" | "authorized" | string;
   token: string | null;
 }
+
+export interface AiSettingsInfo {
+  provider: string;
+  model: string;
+  base_url: string;
+  keyed_providers: string[];
+}

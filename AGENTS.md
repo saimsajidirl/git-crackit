@@ -63,6 +63,21 @@ React 18 + TypeScript + Vite.
   commit→stash commit, third parent = untracked files). Sidebar "Stashes"
   section in ChangesPanel expands each stash to its file list; clicking a file
   shows a read-only diff with a "stash@{n}" banner; context menu apply/pop/drop.
+- AI commit messages (only use of AI — nothing else): `ai.rs` — sparkle
+  button in the commit box sends the staged diff (12 KB cap). Providers
+  (persisted `AiSettings` in state.json): `auto` (first saved key in
+  claude→openai→groq order, else local Ollama), `anthropic` (Messages API,
+  `x-api-key` + `anthropic-version` headers), `openai`, `groq`, `ollama`
+  (localhost:11434, model from `/api/tags`), `custom` (base URL + key).
+  Key providers always auto-pick the cheapest chat model via the provider's
+  `/models` list (cheap_model tier keywords; embed/tts/image skipped) — users
+  never choose a model (Settings hides the field for them).
+  Per-provider keys live in the OS keychain as `git-crackit/ai-{provider}`
+  (state.json `keys` map fallback when no keychain). Generated text splits
+  on the first blank line → summary + description. Retired/unusable:
+  GitHub Models (EOL 2026-07-30), OpenCode Zen free tier (client-locked),
+  Pollinations anonymous (flaky/402s — removed). AboutDialog = mini README
+  in-app (gear menu / palette).
 - Git LFS: `RepoInfo.uses_lfs`/`lfs_installed` flag repos whose `.gitattributes`
   contains `filter=lfs` and whether `git-lfs` is on PATH. Clone/pull/checkout
   run `git lfs pull|checkout` hooks when available; a warning banner shows when

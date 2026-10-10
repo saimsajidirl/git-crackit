@@ -80,6 +80,8 @@ pub fn repo_info(repo: &Repository, path: &Path) -> Result<RepoInfo, String> {
         upstream,
         is_unborn,
         remotes,
+        uses_lfs: repo_uses_lfs(repo),
+        lfs_installed: lfs_available(),
     })
 }
 
@@ -126,32 +128,39 @@ pub fn clone_repository<R: Runtime>(
     dest: String,
 ) -> Result<RepoInfo, String> {
     let creds = get_creds(&state);
-    let mut cb = remote_callbacks(creds);
-    let app2 = app.clone();
-    let dest2 = dest.clone();
-    cb.transfer_progress(move |p| {
-        let _ = app2.emit(
-            "clone-progress",
-            OpProgress {
-                op: "clone".into(),
-                received: p.received_objects(),
-                total: p.total_objects(),
-                path: dest2.clone(),
-            },
-        );
-        true
-    });
-
-    let mut fo = FetchOptions::new();
-    fo.remote_callbacks(cb);
-
-    let mut builder = git2::build::RepoBuilder::new();
-    builder.fetch_options(fo);
-
     let dest_path = PathBuf::from(&dest);
-    let repo = builder
-        .clone(&url, &dest_path)
-        .map_err(|e| e.message().to_string())?;
+    let repo = if is_ssh_url(&url) {
+        // SSH transport: shell out to `git` (uses user's ssh-agent/config).
+        git_clone(&app, &url, &dest_path, &creds)?;
+        Repository::open(&dest_path).map_err(|e| e.message().to_string())?
+    } else {
+        let mut cb = remote_callbacks(creds);
+        let app2 = app.clone();
+        let dest2 = dest.clone();
+        cb.transfer_progress(move |p| {
+            let _ = app2.emit(
+                "clone-progress",
+                OpProgress {
+                    op: "clone".into(),
+                    received: p.received_objects(),
+                    total: p.total_objects(),
+                    path: dest2.clone(),
+                },
+            );
+            true
+        });
+
+        let mut fo = FetchOptions::new();
+        fo.remote_callbacks(cb);
+
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.fetch_options(fo);
+
+        builder
+            .clone(&url, &dest_path)
+            .map_err(|e| e.message().to_string())?
+    };
+    lfs_pull(&repo, &get_creds(&state));
 
     let info = repo_info(&repo, &dest_path)?;
     *state.repo_path.lock().map_err(|e| e.to_string())? = Some(dest_path.clone());
@@ -225,7 +234,7 @@ pub fn get_credentials(state: State<AppState>) -> Result<CredentialStatus, Strin
     Ok(CredentialStatus {
         username: creds.username,
         has_password: creds.password.is_some(),
-        remembered: state::load_persisted().credentials.is_some(),
+        remembered: state::credentials_remembered(),
     })
 }
 
@@ -250,4 +259,111 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let res = std::process::Command::new("xdg-open").arg(&url).spawn();
     res.map(|_| ()).map_err(|e| format!("Could not open browser: {}", e))
+}
+
+/// List private keys under ~/.ssh (first bytes must look like a private key).
+#[tauri::command]
+pub fn list_ssh_keys() -> Result<Vec<String>, String> {
+    let home = dirs::home_dir().ok_or("Could not locate home directory")?;
+    let ssh_dir = home.join(".ssh");
+    let mut keys = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&ssh_dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_file() {
+                continue;
+            }
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.ends_with(".pub")
+                || matches!(name, "known_hosts" | "config" | "authorized_keys" | "authorized_keys2" | "environment" | "rc")
+                || name.starts_with("known_hosts")
+            {
+                continue;
+            }
+            let head = std::fs::File::open(&p)
+                .ok()
+                .and_then(|mut f| {
+                    use std::io::Read;
+                    let mut buf = [0u8; 128];
+                    f.read(&mut buf).ok().map(|n| String::from_utf8_lossy(&buf[..n]).to_string())
+                })
+                .unwrap_or_default();
+            if head.contains("PRIVATE KEY") {
+                keys.push(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    keys.sort();
+    Ok(keys)
+}
+
+/// Load a (possibly passphrase-protected) key into the running ssh-agent.
+/// The passphrase reaches `ssh-add` through an SSH_ASKPASS helper script —
+/// the GUI never blocks on a terminal prompt.
+#[tauri::command]
+pub fn load_ssh_key(path: String, passphrase: String) -> Result<String, String> {
+    if !Path::new(&path).is_file() {
+        return Err(format!("Key file not found: {}", path));
+    }
+    // One-shot askpass: on a wrong passphrase ssh-add re-invokes SSH_ASKPASS in
+    // a tight retry loop, so the script must fail on the second call.
+    let pid = std::process::id();
+    let script = std::env::temp_dir().join(format!("gc-askpass-{}.sh", pid));
+    let count = std::env::temp_dir().join(format!("gc-askpass-{}.n", pid));
+    let _ = std::fs::remove_file(&count);
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nn=$(cat \"$GC_ASKPASS_N\" 2>/dev/null || echo 0)\nn=$((n + 1))\necho \"$n\" > \"$GC_ASKPASS_N\"\n[ \"$n\" -gt 1 ] && exit 1\nprintf '%s\\n' \"$GC_ASKPASS_PW\"\n",
+    )
+    .map_err(|e| format!("Could not write askpass helper: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700));
+    }
+    let mut child = std::process::Command::new("ssh-add")
+        .arg(&path)
+        .env("SSH_ASKPASS", &script)
+        .env("SSH_ASKPASS_REQUIRE", "force")
+        .env("DISPLAY", "git-crackit:0")
+        .env("GC_ASKPASS_PW", &passphrase)
+        .env("GC_ASKPASS_N", &count)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|_| {
+            let _ = std::fs::remove_file(&script);
+            "ssh-add not found — install the OpenSSH client tools.".to_string()
+        })?;
+    // Hard timeout as a safety net in case askpass handling ever stalls.
+    let started = std::time::Instant::now();
+    let out = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break child.wait_with_output(),
+            Ok(None) if started.elapsed().as_secs() > 15 => {
+                let _ = child.kill();
+                break child.wait_with_output();
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(e) => {
+                let _ = child.kill();
+                break Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+            }
+        }
+    };
+    let _ = std::fs::remove_file(&script);
+    let _ = std::fs::remove_file(&count);
+    let out = out.map_err(|e| format!("ssh-add failed: {}", e))?;
+    if out.status.success() {
+        return Ok("Key loaded into ssh-agent. Retry the operation.".to_string());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lower = stderr.to_lowercase();
+    if lower.contains("could not open a connection") {
+        Err("ssh-agent isn't running — start it (`eval $(ssh-agent)`, or enable the \"OpenSSH Authentication Agent\" service on Windows), then retry.".into())
+    } else if lower.contains("incorrect passphrase") || lower.contains("bad passphrase") {
+        Err("Incorrect passphrase for that key.".into())
+    } else {
+        Err(format!("ssh-add failed: {}", stderr.trim()))
+    }
 }

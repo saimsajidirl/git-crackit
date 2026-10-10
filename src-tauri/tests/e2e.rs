@@ -115,3 +115,172 @@ fn full_workflow() {
     cmds_repo::close_repository(app.state()).unwrap();
     assert!(cmds_files::get_status(app.state()).is_err());
 }
+
+#[test]
+fn stash_files_and_diff() {
+    use git_crackit::cmds_stash_tags;
+    let dir = "/tmp/git-crackit-stash-e2e";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+
+    let app = tauri::test::mock_app();
+    app.manage(AppState::default());
+    let handle = app.handle().clone();
+
+    cmds_repo::init_repository(handle.clone(), app.state(), dir.into(), Some(false)).unwrap();
+    cmds_files::set_git_identity(app.state(), "T".into(), "t@e.com".into(), Some(false)).unwrap();
+    std::fs::write(format!("{}/a.txt", dir), "one\n").unwrap();
+    cmds_files::stage_all(app.state()).unwrap();
+    cmds_files::create_commit(app.state(), "init".into(), None).unwrap();
+    std::fs::write(format!("{}/a.txt", dir), "one\ntwo\n").unwrap();
+    std::fs::write(format!("{}/u.txt", dir), "untracked\n").unwrap();
+    cmds_stash_tags::stash_save(app.state(), "wip".into(), Some(true)).unwrap();
+
+    let files = cmds_stash_tags::stash_files(app.state(), 0).unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"a.txt"), "tracked file missing: {:?}", paths);
+    assert!(paths.contains(&"u.txt"), "untracked file missing: {:?}", paths);
+
+    let d = cmds_stash_tags::stash_file_diff(app.state(), 0, "a.txt".into()).unwrap();
+    assert_eq!(d.additions, 1);
+    let du = cmds_stash_tags::stash_file_diff(app.state(), 0, "u.txt".into()).unwrap();
+    assert_eq!(du.status, "added");
+}
+
+fn git_cli(dir: &str, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn rebase_action_preserves_merge_commits() {
+    let dir = "/tmp/git-crackit-rebase-e2e";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+
+    // Fixture via git CLI: base → m-work + side-work → merge → p1 → p2.
+    git_cli(dir, &["init", "-b", "main"]);
+    git_cli(dir, &["config", "user.email", "t@e.com"]);
+    git_cli(dir, &["config", "user.name", "T"]);
+    git_cli(dir, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(format!("{}/a.txt", dir), "1\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "base"]);
+    git_cli(dir, &["branch", "side"]);
+    std::fs::write(format!("{}/m.txt", dir), "m\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "main work"]);
+    let m_work = git_cli(dir, &["rev-parse", "HEAD"]);
+    git_cli(dir, &["checkout", "-q", "side"]);
+    std::fs::write(format!("{}/s.txt", dir), "s\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "side work"]);
+    git_cli(dir, &["checkout", "-q", "main"]);
+    git_cli(dir, &["merge", "-q", "--no-ff", "side", "-m", "merge side"]);
+    std::fs::write(format!("{}/p1.txt", dir), "1\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "p1"]);
+    std::fs::write(format!("{}/p2.txt", dir), "2\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "p2"]);
+    let p2 = git_cli(dir, &["rev-parse", "HEAD"]);
+
+    let app = tauri::test::mock_app();
+    app.manage(AppState::default());
+    let handle = app.handle().clone();
+    cmds_repo::open_repository(handle.clone(), app.state(), dir.into()).unwrap();
+
+    // Move "main work" (older than the merge) after p2 — merge is inside range.
+    let res = cmds_branches::rebase_commit_action(
+        app.state(),
+        m_work.clone(),
+        p2.clone(),
+        "move_after".into(),
+    )
+    .unwrap();
+    assert_eq!(res.status, "merged", "rebase failed: {:?}", res.conflicts);
+
+    let h = cmds_history::get_history(app.state(), None, None, None, None).unwrap();
+    assert_eq!(h[0].summary, "main work", "order: {:?}", h.iter().map(|c| &c.summary).collect::<Vec<_>>());
+    assert_eq!(h[1].summary, "p2");
+    assert_eq!(h[2].summary, "p1");
+
+    // The merge commit must still exist in the rewritten history.
+    let repo = git2::Repository::open(dir).unwrap();
+    let mut walk = repo.revwalk().unwrap();
+    walk.push_head().unwrap();
+    let has_merge = walk
+        .flatten()
+        .any(|oid| repo.find_commit(oid).unwrap().parent_count() == 2);
+    assert!(has_merge, "merge commit was lost by the rebase");
+}
+
+#[test]
+fn ssh_remote_dispatches_to_git_cli() {
+    use git_crackit::cmds_remotes;
+    let dir = "/tmp/git-crackit-ssh-e2e";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+
+    let app = tauri::test::mock_app();
+    app.manage(AppState::default());
+    let handle = app.handle().clone();
+
+    cmds_repo::init_repository(handle.clone(), app.state(), dir.into(), Some(false)).unwrap();
+    cmds_remotes::add_remote(app.state(), "origin".into(), "git@localhost:nonexistent/repo.git".into()).unwrap();
+
+    let err = cmds_remotes::fetch_remote(handle.clone(), app.state(), Some("origin".into())).unwrap_err();
+    // Must reach the system git CLI (ssh connect/auth error), not git2's
+    // "unsupported URL protocol" error.
+    assert!(!err.contains("unsupported"), "hit git2 path: {}", err);
+    assert!(
+        err.contains("SSH") || err.contains("ssh") || err.contains("onnect"),
+        "unexpected error: {}", err
+    );
+}
+
+#[test]
+fn ai_generate_requires_staged_changes() {
+    let dir = "/tmp/git-crackit-ai-e2e";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+
+    let app = tauri::test::mock_app();
+    app.manage(AppState::default());
+    let handle = app.handle().clone();
+
+    cmds_repo::init_repository(handle.clone(), app.state(), dir.into(), Some(false)).unwrap();
+    std::fs::write(format!("{}/f.txt", dir), "hello").unwrap();
+
+    // Nothing staged → clear guard error before any provider call.
+    let err = git_crackit::ai::generate_commit_message(app.state()).unwrap_err();
+    assert!(err.contains("No staged changes"), "unexpected: {}", err);
+}
+
+#[test]
+#[ignore = "live network — run manually: cargo test --test e2e ai_live -- --ignored"]
+fn ai_live_generates_message() {
+    let dir = "/tmp/git-crackit-ai-live";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+    let app = tauri::test::mock_app();
+    app.manage(AppState::default());
+    let handle = app.handle().clone();
+    cmds_repo::init_repository(handle.clone(), app.state(), dir.into(), Some(false)).unwrap();
+    std::fs::write(format!("{}/f.txt", dir), "hello world\n").unwrap();
+    cmds_files::stage_files(app.state(), vec!["f.txt".into()]).unwrap();
+    match git_crackit::ai::generate_commit_message(app.state()) {
+        Ok(m) => println!("generated: {}", m),
+        Err(e) => println!("provider error (expected without keys/ollama): {}", e),
+    }
+}

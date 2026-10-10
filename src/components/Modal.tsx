@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useId } from "react";
 import { Icon } from "../icons";
 
 export function Modal({
@@ -20,11 +20,12 @@ export function Modal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const titleId = useId();
   return (
     <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ width }} role="dialog" aria-label={title}>
+      <div className="modal" style={{ width }} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <div className="modal-header">
-          <span className="modal-title">{title}</span>
+          <span className="modal-title" id={titleId}>{title}</span>
           <button className="icon-btn" onClick={onClose} aria-label="Close">
             <Icon name="x" />
           </button>

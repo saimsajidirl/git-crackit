@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from "react";
-import type { FileChange } from "../types";
+import type { FileChange, StashFileInfo, StashInfo } from "../types";
 import { Icon } from "../icons";
 import { Dropdown } from "./ContextMenu";
-import { cx, dirName, fileName, statusLetter } from "../util";
+import { cx, dirName, fileName, statusLetter, timeAgo } from "../util";
 
 export interface FileSelection {
   path: string;
@@ -20,10 +20,20 @@ export function ChangesPanel({
   onContextMenu,
   onDiscardAll,
   onStashAll,
+  stashes,
+  expandedStash,
+  stashFiles,
+  stashSel,
+  onToggleStash,
+  onSelectStashFile,
+  onStashContext,
   headName,
   repoState,
   isUnborn,
   busy,
+  onGenerateMessage,
+  onAiSetup,
+  onError,
 }: {
   changes: FileChange[];
   selected: FileSelection | null;
@@ -35,15 +45,51 @@ export function ChangesPanel({
   onContextMenu: (e: React.MouseEvent, f: FileChange) => void;
   onDiscardAll: () => void;
   onStashAll: () => void;
+  stashes: StashInfo[];
+  expandedStash: number | null;
+  stashFiles: Record<number, StashFileInfo[]>;
+  stashSel: { index: number; file: string } | null;
+  onToggleStash: (index: number) => void;
+  onSelectStashFile: (index: number, path: string) => void;
+  onStashContext: (e: React.MouseEvent, s: StashInfo) => void;
   headName: string;
   repoState: string;
   isUnborn: boolean;
   busy: string | null;
+  onGenerateMessage?: () => Promise<string>;
+  onAiSetup?: () => void;
+  onError?: (m: string) => void;
 }) {
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
   const [amend, setAmend] = useState(false);
   const [kebabOpen, setKebabOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+
+  const genMessage = async () => {
+    if (!onGenerateMessage) return;
+    setAiBusy(true);
+    try {
+      const msg = (await onGenerateMessage())?.trim();
+      if (!msg) {
+        onError?.("AI returned an empty message — try again or pick a different provider.");
+        return;
+      }
+      const split = msg.indexOf("\n\n");
+      if (split === -1) {
+        setSummary(msg.replace(/\n/g, " ").trim());
+      } else {
+        setSummary(msg.slice(0, split).replace(/\n/g, " ").trim());
+        setDescription(msg.slice(split).trim());
+      }
+    } catch (e) {
+      const m = String(e);
+      if (m.startsWith("AI_CFG:")) onAiSetup?.();
+      else onError?.(m);
+    } finally {
+      setAiBusy(false);
+    }
+  };
 
   const conflicts = changes.filter((c) => c.conflicted);
   const normal = changes.filter((c) => !c.conflicted);
@@ -148,20 +194,77 @@ export function ChangesPanel({
         )}
       </div>
 
+      {stashes.length > 0 && (
+        <div className="stash-section">
+          <div className="stash-section-header">
+            <Icon name="stash" size={13} />
+            <span className="grow">Stashes</span>
+            <span className="badge">{stashes.length}</span>
+          </div>
+          {stashes.map((s) => (
+            <div key={s.index} className="stash-entry">
+              <div
+                className={cx("stash-row", expandedStash === s.index && "open")}
+                onClick={() => onToggleStash(s.index)}
+                onContextMenu={(e) => onStashContext(e, s)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggleStash(s.index); } }}
+              >
+                <Icon name="chevronDown" size={12} className={cx("chev", expandedStash !== s.index && "collapsed")} />
+                <span className="ellipsis grow" title={s.message}>{s.message}</span>
+                <span className="muted small">{timeAgo(s.time)}</span>
+              </div>
+              {expandedStash === s.index && (
+                <div className="stash-files">
+                  {(stashFiles[s.index] ?? []).map((f) => (
+                    <div
+                      key={f.path}
+                      className={cx("file-row stash-file", stashSel?.index === s.index && stashSel.file === f.path && "selected")}
+                      onClick={() => onSelectStashFile(s.index, f.path)}
+                    >
+                      <span className={`status-badge st-${f.status}`}>{statusLetter(f.status)}</span>
+                      <span className="file-path" title={f.path}>
+                        <span className="file-name">{fileName(f.path)}</span>
+                        <span className="file-dir">{dirName(f.path)}</span>
+                      </span>
+                    </div>
+                  ))}
+                  {!stashFiles[s.index] && <div className="muted small stash-loading">Loading…</div>}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="commit-box">
         <div className="commit-box-inner">
           <div className="summary-wrap">
-            <input
-              className="input"
-              placeholder={isUnborn ? "Summary (required) — first commit" : "Summary (required)"}
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.ctrlKey || e.metaKey || !e.shiftKey)) doCommit();
-              }}
-            />
-            {summary.length > 0 && (
-              <span className={cx("char-count", summary.length > 72 && "over")}>{72 - summary.length}</span>
+            <div className="summary-field">
+              <input
+                className="input"
+                placeholder={isUnborn ? "Summary (required) — first commit" : "Summary (required)"}
+                value={summary}
+                onChange={(e) => setSummary(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey || !e.shiftKey)) doCommit();
+                }}
+              />
+              {summary.length > 0 && (
+                <span className={cx("char-count", summary.length > 72 && "over")}>{72 - summary.length}</span>
+              )}
+            </div>
+            {onGenerateMessage && (
+              <button
+                className="ai-gen-btn"
+                title={stagedCount === 0 ? "Stage files, then generate an AI commit message" : "Generate commit message from staged diff (AI)"}
+                aria-label="Generate commit message"
+                disabled={aiBusy || stagedCount === 0}
+                onClick={genMessage}
+              >
+                <Icon name="sparkle" size={17} className={aiBusy ? "spin" : ""} />
+              </button>
             )}
           </div>
           <textarea

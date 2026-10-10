@@ -19,7 +19,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             repo_path: Mutex::new(None),
-            creds: Mutex::new(load_persisted().credentials.unwrap_or_default()),
+            creds: Mutex::new(load_credentials()),
             watcher: Mutex::new(None),
         }
     }
@@ -30,6 +30,7 @@ pub struct PersistedState {
     pub recent: Vec<String>,
     pub last_repo: Option<String>,
     pub credentials: Option<Credentials>,
+    pub ai: Option<crate::types::AiSettings>,
 }
 
 fn state_file() -> Option<PathBuf> {
@@ -77,8 +78,68 @@ pub fn set_last(path: Option<String>) {
 }
 
 /// Persist (or clear, with `None`) remembered HTTPS credentials.
+/// Prefers the OS keychain; falls back to state.json when unavailable.
 pub fn save_credentials(creds: Option<Credentials>) {
     let mut st = load_persisted();
-    st.credentials = creds;
+    match creds {
+        Some(c) => {
+            let in_keyring = keyring::Entry::new("git-crackit", "https")
+                .ok()
+                .and_then(|e| {
+                    e.set_password(&serde_json::to_string(&c).unwrap_or_default())
+                        .ok()
+                })
+                .is_some();
+            // Plaintext only when keyring is unavailable.
+            st.credentials = if in_keyring { None } else { Some(c) };
+        }
+        None => {
+            if let Ok(e) = keyring::Entry::new("git-crackit", "https") {
+                let _ = e.delete_credential();
+            }
+            st.credentials = None;
+        }
+    }
+    save_persisted(&st);
+}
+
+/// Load remembered credentials: OS keychain first, then state.json fallback
+/// (migrating plaintext to the keychain when possible).
+pub fn load_credentials() -> Credentials {
+    if let Ok(e) = keyring::Entry::new("git-crackit", "https") {
+        if let Ok(s) = e.get_password() {
+            if let Ok(c) = serde_json::from_str::<Credentials>(&s) {
+                return c;
+            }
+        }
+    }
+    if let Some(c) = load_persisted().credentials {
+        let c2 = c.clone();
+        std::thread::spawn(move || save_credentials(Some(c2))); // migrate to keyring
+        return c;
+    }
+    Credentials::default()
+}
+
+/// Whether remembered credentials exist (keychain or file fallback).
+pub fn credentials_remembered() -> bool {
+    keyring::Entry::new("git-crackit", "https")
+        .ok()
+        .and_then(|e| e.get_password().ok())
+        .is_some()
+        || load_persisted().credentials.is_some()
+}
+
+/// AI commit-message settings — persisted in state.json. The optional
+/// `api_key` (custom provider only) follows the same tradeoff as the
+/// plaintext credential fallback; GitHub Models reuses the stored
+/// HTTPS/GitHub token and Ollama needs no key.
+pub fn load_ai() -> crate::types::AiSettings {
+    load_persisted().ai.unwrap_or_default()
+}
+
+pub fn save_ai(ai: &crate::types::AiSettings) {
+    let mut st = load_persisted();
+    st.ai = Some(ai.clone());
     save_persisted(&st);
 }

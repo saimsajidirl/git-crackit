@@ -1,9 +1,155 @@
 use crate::helpers::*;
 use crate::state::AppState;
 use crate::types::*;
-use git2::{ObjectType, Oid, StashFlags};
+use git2::{ObjectType, Oid, Repository, StashFlags};
 use std::cell::RefCell;
 use tauri::State;
+
+/// Resolve `stash@{index}` to its commit oid.
+fn stash_oid(repo: &mut Repository, index: usize) -> Result<Oid, String> {
+    let found: RefCell<Option<Oid>> = RefCell::new(None);
+    repo.stash_foreach(|i, _msg, oid| {
+        if i == index {
+            *found.borrow_mut() = Some(*oid);
+            false
+        } else {
+            true
+        }
+    })
+    .map_err(|e| e.message().to_string())?;
+    found
+        .into_inner()
+        .ok_or_else(|| format!("No stash@{{{}}}", index))
+}
+
+/// Tracked diff (base commit → stash commit) + the untracked-files tree
+/// (`stash@{n}^3`, only when stashed with -u). Pure reads — no ODB writes,
+/// so the fs watcher stays quiet.
+fn stash_parts<'r>(
+    repo: &'r Repository,
+    oid: Oid,
+) -> Result<(git2::Diff<'r>, Option<git2::Tree<'r>>), String> {
+    let commit = repo.find_commit(oid).map_err(|e| e.message().to_string())?;
+    let stash_tree = commit.tree().map_err(|e| e.message().to_string())?;
+    let base_tree = commit
+        .parent(0)
+        .and_then(|p| p.tree())
+        .map_err(|e| e.message().to_string())?;
+    let tracked = repo
+        .diff_tree_to_tree(Some(&base_tree), Some(&stash_tree), None)
+        .map_err(|e| e.message().to_string())?;
+    let untracked_tree = commit.parent(2).ok().and_then(|p| p.tree().ok());
+    Ok((tracked, untracked_tree))
+}
+
+/// A FileDiff for a file that exists only in the stash's untracked tree —
+/// every line is an addition.
+fn added_filediff(path: &str, blob: &git2::Blob) -> FileDiff {
+    if blob.is_binary() {
+        return FileDiff {
+            path: path.into(),
+            old_path: None,
+            status: "added".into(),
+            is_binary: true,
+            too_large: false,
+            additions: 0,
+            deletions: 0,
+            hunks: vec![],
+        };
+    }
+    let content = String::from_utf8_lossy(blob.content());
+    let lines: Vec<DiffLine> = content
+        .split_inclusive('\n')
+        .enumerate()
+        .map(|(i, l)| DiffLine {
+            kind: "add".into(),
+            old_lineno: None,
+            new_lineno: Some((i + 1) as u32),
+            content: l.to_string(),
+        })
+        .collect();
+    let n = lines.len() as u32;
+    FileDiff {
+        path: path.into(),
+        old_path: None,
+        status: "added".into(),
+        is_binary: false,
+        too_large: n > 20000,
+        additions: n as usize,
+        deletions: 0,
+        hunks: vec![DiffHunk {
+            header: format!("@@ -0,0 +1,{} @@", n),
+            old_start: 0,
+            old_lines: 0,
+            new_start: 1,
+            new_lines: n,
+            lines,
+        }],
+    }
+}
+
+#[tauri::command]
+pub fn stash_files(state: State<AppState>, index: usize) -> Result<Vec<StashFileInfo>, String> {
+    let mut repo = open_repo(&state)?;
+    let oid = stash_oid(&mut repo, index)?;
+    let (tracked, untracked_tree) = stash_parts(&repo, oid)?;
+    let mut out = Vec::new();
+    for delta in tracked.deltas() {
+        let path = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        out.push(StashFileInfo {
+            path,
+            status: delta_str(delta.status()).to_string(),
+        });
+    }
+    if let Some(tree) = &untracked_tree {
+        let mut walk_err = false;
+        let _ = tree.walk(git2::TreeWalkMode::PreOrder, |dir, entry| {
+            if entry.kind() == Some(ObjectType::Blob) {
+                let path = format!("{}{}", dir, entry.name().unwrap_or_default());
+                out.push(StashFileInfo {
+                    path,
+                    status: "added".into(),
+                });
+            } else if entry.kind().is_none() {
+                walk_err = true;
+                return git2::TreeWalkResult::Abort;
+            }
+            git2::TreeWalkResult::Ok
+        });
+        if walk_err {
+            return Err("failed to read stash untracked tree".into());
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn stash_file_diff(
+    state: State<AppState>,
+    index: usize,
+    path: String,
+) -> Result<FileDiff, String> {
+    let mut repo = open_repo(&state)?;
+    let oid = stash_oid(&mut repo, index)?;
+    let (mut tracked, untracked_tree) = stash_parts(&repo, oid)?;
+    if let Ok(fd) = find_file_in_diff(&mut tracked, &path) {
+        return Ok(fd);
+    }
+    if let Some(tree) = &untracked_tree {
+        if let Ok(entry) = tree.get_path(std::path::Path::new(&path)) {
+            if entry.kind() == Some(ObjectType::Blob) {
+                let blob = repo.find_blob(entry.id()).map_err(|e| e.message().to_string())?;
+                return Ok(added_filediff(&path, &blob));
+            }
+        }
+    }
+    Err(format!("No diff found for {}", path))
+}
 
 #[tauri::command]
 pub fn list_stashes(state: State<AppState>) -> Result<Vec<StashInfo>, String> {

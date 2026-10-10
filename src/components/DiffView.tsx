@@ -1,10 +1,53 @@
-import React, { useMemo } from "react";
-import type { FileDiff } from "../types";
+import React, { useEffect, useMemo, useState } from "react";
+import type { FileDiff, ImageDiff } from "../types";
 import { Icon } from "../icons";
 import { useVirtual } from "../useVirtual";
+import { api } from "../api";
 
 const LINE_H = 20;
 const VIRTUALIZE_AFTER = 400;
+const IMG_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg", "avif"]);
+
+function isImagePath(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return IMG_EXTS.has(ext);
+}
+
+function ImageDiffView({ diff, staged }: { diff: FileDiff; staged: boolean }) {
+  const [img, setImg] = useState<ImageDiff | null>(null);
+  useEffect(() => {
+    setImg(null);
+    api.getImageDiff(diff.path, staged).then(setImg).catch(() => setImg(null));
+  }, [diff.path, staged]);
+  if (!img) return <DiffEmpty icon="file" title={diff.path} sub="Loading image…" />;
+  const panels: { label: string; src: string | null }[] = [
+    { label: diff.old_path ? `Before — ${diff.old_path}` : "Before", src: img.old },
+    { label: "After", src: img.new },
+  ];
+  return (
+    <div className="diff-view">
+      <div className="diff-header">
+        <span className="diff-path" title={diff.path}>
+          <Icon name="file" size={13} />
+          <span className="ellipsis">{diff.path}</span>
+        </span>
+        <span className="badge blue">{diff.status}</span>
+      </div>
+      <div className="image-diff">
+        {panels.map((p) => (
+          <div key={p.label} className="image-pane">
+            <div className="image-pane-label muted small ellipsis">{p.label}</div>
+            {p.src ? (
+              <img src={p.src} alt={p.label} />
+            ) : (
+              <div className="image-empty muted small">{diff.status === "added" && p.label === "After" ? "—" : "(absent)"}</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 interface Row {
   kind: string;
@@ -23,7 +66,7 @@ export function DiffEmpty({ icon, title, sub }: { icon: string; title: string; s
   );
 }
 
-export function DiffView({ diff }: { diff: FileDiff | null }) {
+export function DiffView({ diff, staged = false }: { diff: FileDiff | null; staged?: boolean }) {
   const { rows, maxCols } = useMemo(() => {
     const rows: Row[] = [];
     let maxCols = 0;
@@ -43,7 +86,10 @@ export function DiffView({ diff }: { diff: FileDiff | null }) {
   const { ref, start, end, padTop, padBottom } = useVirtual(rows.length, LINE_H, 20, virtual);
 
   if (!diff) return <DiffEmpty icon="diff" title="Select a file to view its changes" />;
-  if (diff.is_binary) return <DiffEmpty icon="file" title={diff.path} sub="Binary file — no preview available" />;
+  if (diff.is_binary) {
+    if (isImagePath(diff.path)) return <ImageDiffView diff={diff} staged={staged} />;
+    return <DiffEmpty icon="file" title={diff.path} sub="Binary file — no preview available" />;
+  }
   if (diff.hunks.length === 0) return <DiffEmpty icon="file" title={diff.path} sub="No textual changes to display" />;
 
   return (

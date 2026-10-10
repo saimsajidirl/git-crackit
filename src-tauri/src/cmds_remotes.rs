@@ -80,7 +80,23 @@ fn upstream_remote(repo: &git2::Repository) -> Result<String, String> {
     default_remote(repo)
 }
 
+fn remote_is_ssh(repo: &git2::Repository, remote_name: &str) -> bool {
+    repo.find_remote(remote_name)
+        .ok()
+        .and_then(|r| r.url().map(|u| u.to_string()))
+        .map(|u| is_ssh_url(&u))
+        .unwrap_or(false)
+}
+
 fn fetch_one(repo: &git2::Repository, remote_name: &str, creds: crate::state::Credentials) -> Result<(), String> {
+    if remote_is_ssh(repo, remote_name) {
+        git_net(repo_dir(repo), &creds, &["fetch", remote_name])?;
+        // Pre-download LFS objects for the fetched refs.
+        if repo_uses_lfs(repo) && lfs_available() {
+            let _ = git_net(repo_dir(repo), &creds, &["lfs", "fetch", remote_name]);
+        }
+        return Ok(());
+    }
     let mut remote = repo
         .find_remote(remote_name)
         .map_err(|e| format!("Remote '{}': {}", remote_name, e.message()))?;
@@ -142,19 +158,46 @@ pub fn pull(state: State<AppState>) -> Result<MergeResult, String> {
     let remote_name = upstream_remote(&repo)?;
     fetch_one(&repo, &remote_name, creds)?;
 
-    // Merge FETCH_HEAD
-    let fetch_head = repo
-        .find_reference("FETCH_HEAD")
-        .map_err(|_| "Nothing fetched".to_string())?;
-    let annotated = repo
-        .reference_to_annotated_commit(&fetch_head)
-        .map_err(|e| e.message().to_string())?;
-    let branch_label = repo
+    // Merge the current branch's upstream tracking ref (fall back to FETCH_HEAD).
+    let upstream_ref = repo
         .head()
         .ok()
-        .and_then(|h| h.shorthand().map(|s| format!("{}/{}", remote_name, s)))
-        .unwrap_or_else(|| format!("{}", remote_name));
-    merge_annotated(&repo, &annotated, &branch_label)
+        .filter(|h| h.is_branch())
+        .and_then(|h| {
+            repo.find_branch(h.shorthand()?, BranchType::Local)
+                .ok()
+                .and_then(|b| b.upstream().ok())
+                .and_then(|u| u.get().name().map(|n| n.to_string()))
+        });
+    let (annotated, branch_label) = match upstream_ref {
+        Some(refname) => {
+            let label = refname
+                .strip_prefix("refs/remotes/")
+                .unwrap_or(&refname)
+                .to_string();
+            let obj = repo
+                .revparse_single(&refname)
+                .map_err(|e| e.message().to_string())?;
+            let annotated = repo
+                .find_annotated_commit(obj.id())
+                .map_err(|e| e.message().to_string())?;
+            (annotated, label)
+        }
+        None => {
+            let fetch_head = repo
+                .find_reference("FETCH_HEAD")
+                .map_err(|_| "Nothing fetched".to_string())?;
+            let annotated = repo
+                .reference_to_annotated_commit(&fetch_head)
+                .map_err(|e| e.message().to_string())?;
+            (annotated, remote_name.clone())
+        }
+    };
+    let res = merge_annotated(&repo, &annotated, &branch_label);
+    if res.is_ok() {
+        lfs_pull(&repo, &get_creds(&state));
+    }
+    res
 }
 
 #[tauri::command]
@@ -170,21 +213,25 @@ pub fn push(state: State<AppState>, set_upstream: Option<bool>) -> Result<(), St
         return Err(format!("Remote '{}' does not exist", remote_name));
     }
     let creds = get_creds(&state);
-    let mut remote = repo.find_remote(&remote_name).map_err(|e| e.message().to_string())?;
-    let cb = remote_callbacks(creds);
-    let mut po = PushOptions::new();
-    po.remote_callbacks(cb);
     let refspec = format!("refs/heads/{0}:refs/heads/{0}", branch_name);
-    remote
-        .push(&[refspec.as_str()], Some(&mut po))
-        .map_err(|e| {
-            let m = e.message().to_string();
-            if m.contains("authentication") || m.contains("credentials") || m.contains("401") || m.contains("403") {
-                format!("AUTH: {}", m)
-            } else {
-                m
-            }
-        })?;
+    if remote_is_ssh(&repo, &remote_name) {
+        git_net(repo_dir(&repo), &creds, &["push", &remote_name, &refspec])?;
+    } else {
+        let mut remote = repo.find_remote(&remote_name).map_err(|e| e.message().to_string())?;
+        let cb = remote_callbacks(creds);
+        let mut po = PushOptions::new();
+        po.remote_callbacks(cb);
+        remote
+            .push(&[refspec.as_str()], Some(&mut po))
+            .map_err(|e| {
+                let m = e.message().to_string();
+                if m.contains("authentication") || m.contains("credentials") || m.contains("401") || m.contains("403") {
+                    format!("AUTH: {}", m)
+                } else {
+                    m
+                }
+            })?;
+    }
 
     if set_upstream.unwrap_or(true) {
         if let Ok(mut b) = repo.find_branch(&branch_name, BranchType::Local) {
@@ -199,14 +246,40 @@ pub fn push_tag(state: State<AppState>, name: String, remote: Option<String>) ->
     let repo = open_repo(&state)?;
     let remote_name = remote.filter(|s| !s.is_empty()).map(Ok).unwrap_or_else(|| default_remote(&repo))?;
     let creds = get_creds(&state);
-    let mut r = repo.find_remote(&remote_name).map_err(|e| e.message().to_string())?;
-    let cb = remote_callbacks(creds);
-    let mut po = PushOptions::new();
-    po.remote_callbacks(cb);
     let refspec = format!("refs/tags/{0}:refs/tags/{0}", name);
-    r.push(&[refspec.as_str()], Some(&mut po))
-        .map_err(|e| e.message().to_string())?;
+    if remote_is_ssh(&repo, &remote_name) {
+        git_net(repo_dir(&repo), &creds, &["push", &remote_name, &refspec])?;
+    } else {
+        let mut r = repo.find_remote(&remote_name).map_err(|e| e.message().to_string())?;
+        let cb = remote_callbacks(creds);
+        let mut po = PushOptions::new();
+        po.remote_callbacks(cb);
+        r.push(&[refspec.as_str()], Some(&mut po))
+            .map_err(|e| e.message().to_string())?;
+    }
     Ok(())
+}
+
+/// Fetch a GitHub PR's head into a local `pr-{n}` branch. Returns the branch name.
+#[tauri::command]
+pub fn fetch_pr_branch(state: State<AppState>, number: u64) -> Result<String, String> {
+    let repo = open_repo(&state)?;
+    let remote_name = upstream_remote(&repo).unwrap_or_else(|_| "origin".into());
+    let branch = format!("pr-{}", number);
+    let refspec = format!("+refs/pull/{0}/head:refs/heads/{1}", number, branch);
+    let creds = get_creds(&state);
+    if remote_is_ssh(&repo, &remote_name) {
+        git_net(repo_dir(&repo), &creds, &["fetch", &remote_name, &refspec])?;
+    } else {
+        let mut remote = repo.find_remote(&remote_name).map_err(|e| e.message().to_string())?;
+        let cb = remote_callbacks(creds);
+        let mut fo = FetchOptions::new();
+        fo.remote_callbacks(cb);
+        remote
+            .fetch(&[refspec.as_str()], Some(&mut fo), None)
+            .map_err(|e| e.message().to_string())?;
+    }
+    Ok(branch)
 }
 
 #[tauri::command]

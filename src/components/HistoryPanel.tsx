@@ -101,17 +101,37 @@ function refBadge(kind: string, name: string, isHeadRef: boolean) {
 }
 
 const CommitRow = memo(function CommitRow({
-  c, g, selected, isHead, onSelect, onContextMenu,
+  c, g, selected, isHead, isDropTarget, onSelect, onContextMenu, onCommitDrop, onDragOverRow,
 }: {
-  c: CommitInfo; g: RowGraph; selected: boolean; isHead: boolean;
+  c: CommitInfo; g: RowGraph; selected: boolean; isHead: boolean; isDropTarget: boolean;
   onSelect: (oid: string) => void; onContextMenu: (e: React.MouseEvent, c: CommitInfo) => void;
+  onCommitDrop: (oid: string, target: string, x: number, y: number) => void;
+  onDragOverRow: (oid: string | null) => void;
 }) {
   return (
     <div
-      className={cx("commit-row", selected && "selected")}
+      className={cx("commit-row", selected && "selected", isDropTarget && "drop-target")}
       style={{ height: ROW_H }}
       onClick={() => onSelect(c.oid)}
       onContextMenu={(e) => onContextMenu(e, c)}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("application/x-gc-commit", c.oid);
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("application/x-gc-commit")) {
+          e.preventDefault();
+          onDragOverRow(c.oid);
+        }
+      }}
+      onDragLeave={() => onDragOverRow(null)}
+      onDrop={(e) => {
+        e.preventDefault();
+        const oid = e.dataTransfer.getData("application/x-gc-commit");
+        onDragOverRow(null);
+        if (oid && oid !== c.oid) onCommitDrop(oid, c.oid, e.clientX, e.clientY);
+      }}
     >
       <GraphCell g={g} isHead={isHead} />
       <Avatar name={c.author_name} email={c.author_email} size={22} />
@@ -136,6 +156,7 @@ export function HistoryPanel({
   headOid,
   onSelect,
   onContextMenu,
+  onCommitDrop,
   onSearch,
   onLoadMore,
   hasMore,
@@ -145,11 +166,13 @@ export function HistoryPanel({
   headOid: string | null;
   onSelect: (oid: string) => void;
   onContextMenu: (e: React.MouseEvent, c: CommitInfo) => void;
+  onCommitDrop?: (oid: string, target: string, x: number, y: number) => void;
   onSearch: (q: string) => void;
   onLoadMore: () => Promise<void> | void;
   hasMore: boolean;
 }) {
   const [query, setQuery] = useState("");
+  const [dropOid, setDropOid] = useState<string | null>(null);
   const graph = useMemo(() => computeGraph(commits), [commits]);
   const maxLanes = useMemo(() => graph.reduce((m, g) => Math.max(m, g.laneCount), 1), [graph]);
   const graphW = maxLanes * LANE_W + 8;
@@ -162,6 +185,10 @@ export function HistoryPanel({
   const selRef = useRef(onSelect);
   selRef.current = onSelect;
   const onSel = useCallback((oid: string) => selRef.current(oid), []);
+  const dropRef = useRef(onCommitDrop);
+  dropRef.current = onCommitDrop;
+  const onDrop = useCallback((oid: string, target: string, x: number, y: number) => dropRef.current?.(oid, target, x, y), []);
+  const onDragOverRow = useCallback((oid: string | null) => setDropOid(oid), []);
 
   const searchTimer = useRef<number>();
   const onQuery = (q: string) => {
@@ -200,8 +227,11 @@ export function HistoryPanel({
               g={graph[i]}
               selected={selectedOid === c.oid}
               isHead={c.oid === headOid}
+              isDropTarget={dropOid === c.oid}
               onSelect={onSel}
               onContextMenu={onCtx}
+              onCommitDrop={onDrop}
+              onDragOverRow={onDragOverRow}
             />
           );
         })}

@@ -25,6 +25,12 @@ export interface ToolbarProps {
   onRemotes: () => void;
   onSettings: () => void;
   onCredentials: () => void;
+  onSshKeys: () => void;
+  onAiKeys: () => void;
+  onAbout: () => void;
+  onCheckUpdates: () => void;
+  onPullRequests: () => void;
+  onIssues: () => void;
   onCloseRepo: () => void;
   onRemoveRecent: (path: string) => void;
   onBranchContext: (e: React.MouseEvent, b: BranchInfo) => void;
@@ -249,15 +255,34 @@ export function Toolbar(p: ToolbarProps) {
               <button className="menu-item" onClick={() => { close(); p.onRemotes(); }}>
                 <Icon name="globe" size={14} /> Remotes…
               </button>
+              <button className="menu-item" onClick={() => { close(); p.onPullRequests(); }}>
+                <Icon name="merge" size={14} /> Pull requests…
+              </button>
+              <button className="menu-item" onClick={() => { close(); p.onIssues(); }}>
+                <Icon name="alert" size={14} /> Issues…
+              </button>
               <button className="menu-item" onClick={() => { close(); p.onSubmodules(); }}>
                 <Icon name="repo" size={14} /> Submodules…
               </button>
               <button className="menu-item" onClick={() => { close(); p.onCredentials(); }}>
-                <Icon name="gear" size={14} /> Credentials…
+                <Icon name="gear" size={14} /> HTTPS credentials…
+              </button>
+              <button className="menu-item" onClick={() => { close(); p.onSshKeys(); }}>
+                <Icon name="cloud" size={14} /> SSH keys…
+              </button>
+              <button className="menu-item" onClick={() => { close(); p.onAiKeys(); }}>
+                <Icon name="sparkle" size={14} /> AI keys…
               </button>
               <div className="menu-separator" />
               <button className="menu-item" onClick={() => { close(); p.onSettings(); }}>
                 <Icon name="gear" size={14} /> Git settings…
+              </button>
+              <button className="menu-item" onClick={() => { close(); p.onCheckUpdates(); }}>
+                <Icon name="download" size={14} /> Check for updates…
+              </button>
+              <div className="menu-separator" />
+              <button className="menu-item" onClick={() => { close(); p.onAbout(); }}>
+                <Icon name="sparkle" size={14} /> About Git Crackit
               </button>
             </Dropdown>
           </ToolbarButton>

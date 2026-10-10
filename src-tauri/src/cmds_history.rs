@@ -238,5 +238,6 @@ pub fn checkout_commit(state: State<AppState>, oid: String) -> Result<(), String
     cb.safe();
     repo.checkout_head(Some(&mut cb))
         .map_err(|e| e.message().to_string())?;
+    crate::helpers::lfs_checkout(&repo);
     Ok(())
 }

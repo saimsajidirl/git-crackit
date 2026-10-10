@@ -42,7 +42,7 @@ fn map_git_err(stderr: &str) -> String {
     let lower = m.to_lowercase();
     let summary = m.to_string();
     if lower.contains("permission denied") || lower.contains("publickey") {
-        return "SSH authentication failed — Git Crackit uses your system SSH keys/agent. Run `ssh-add` or check ~/.ssh.".into();
+        return "SSH: authentication failed — the key may not be loaded or the passphrase is missing.".into();
     }
     if lower.contains("could not read username")
         || lower.contains("authentication failed")

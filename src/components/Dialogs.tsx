@@ -759,3 +759,61 @@ export function IssuesDialog({ onClose, onError, onSignIn }: { onClose: () => vo
     </Modal>
   );
 }
+
+/* ---------------- SSH keys ---------------- */
+export function SshKeyDialog({ onClose, onLoaded, onError }: { onClose: () => void; onLoaded: () => void; onError: (m: string) => void }) {
+  const [keys, setKeys] = useState<string[]>([]);
+  const [path, setPath] = useState("");
+  const [pass, setPass] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.listSshKeys().then((k) => { setKeys(k); if (k.length) setPath((p) => p || k[0]); }).catch(() => {});
+  }, []);
+
+  const pickKey = async () => {
+    const p = await openDialog({ title: "Select SSH private key" });
+    if (typeof p === "string") setPath(p);
+  };
+
+  const load = async () => {
+    if (!path.trim()) return;
+    setBusy(true);
+    try {
+      await api.loadSshKey(path.trim(), pass);
+      onLoaded();
+      onClose();
+    } catch (e) {
+      onError(String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Load SSH key into agent" onClose={onClose} width={470}>
+      <p className="hint">
+        SSH keys with a passphrase must be loaded into your running <code>ssh-agent</code> — Git Crackit
+        uses the system agent and never prompts on a terminal. Pick a key, enter its passphrase
+        (leave empty if the key has none), and it stays loaded until the agent restarts.
+      </p>
+      <Field label="Private key">
+        <div className="input-row">
+          <input className="input grow" autoFocus list="gc-ssh-keys" placeholder="~/.ssh/id_ed25519" value={path} onChange={(e) => setPath(e.target.value)} />
+          <datalist id="gc-ssh-keys">{keys.map((k) => <option key={k} value={k} />)}</datalist>
+          <button className="btn" onClick={pickKey}>Browse…</button>
+        </div>
+        {keys.length > 0 && <div className="hint">Detected {keys.length} key{keys.length > 1 ? "s" : ""} under ~/.ssh</div>}
+      </Field>
+      <Field label="Passphrase">
+        <input className="input" type="password" placeholder="leave empty for unencrypted keys" value={pass}
+          onChange={(e) => setPass(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") load(); }} />
+      </Field>
+      <div className="modal-actions">
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn primary" disabled={busy || !path.trim()} onClick={load}>
+          {busy ? "Loading…" : "Load into agent"}
+        </button>
+      </div>
+    </Modal>
+  );
+}

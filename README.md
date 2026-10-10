@@ -77,14 +77,35 @@ Required repo secrets: `TAURI_SIGNING_PRIVATE_KEY`,
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (generate locally with
 `npx tauri signer generate`).
 
+### Code signing (optional — activates automatically once secrets exist)
+
+The workflow already passes the standard Tauri signing env vars; add the
+secrets and installers get signed on the next tag:
+
+- **macOS**: `APPLE_CERTIFICATE` (base64 `.p12` of a *Developer ID Application*
+  cert — `base64 -i cert.p12 | pbcopy`), `APPLE_CERTIFICATE_PASSWORD`,
+  `APPLE_SIGNING_IDENTITY`, plus notarization creds `APPLE_ID` /
+  `APPLE_PASSWORD` (app-specific password) / `APPLE_TEAM_ID`.
+  Requires a paid Apple Developer account ($99/yr).
+- **Windows**: `WINDOWS_CERTIFICATE` (base64 `.pfx`) +
+  `WINDOWS_CERTIFICATE_PASSWORD`. An OV/EV cert removes SmartScreen;
+  a self-signed cert signs but still warns. Azure Trusted Signing also works —
+  add `AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET` secrets and a
+  `signCommand` under `bundle.windows` in `tauri.conf.json`.
+- **Linux**: no code signing exists; nothing to configure.
+
+Until certs are added, installers are unsigned — expect Gatekeeper/SmartScreen
+warnings (normal for unsigned OSS releases).
+
 Optional: `GIT_CRACKIT_GH_CLIENT_ID` at build time enables the GitHub OAuth
 device flow; without it the sign-in dialog falls back to token entry.
 
 ## Known limitations
 
-- Installers are **unsigned** (no Apple Developer / EV certs yet) — expect
-  Gatekeeper/SmartScreen warnings.
-- Passphrase-protected SSH keys must be loaded into `ssh-agent` (`ssh-add`) —
-  BatchMode never prompts interactively.
-- Drag-drop history rewrites run through `git rebase -i` — merge commits inside
-  the rewritten range are not preserved.
+- Passphrase-protected SSH keys must be loaded into a running `ssh-agent` —
+  the "Load SSH key into agent" dialog (gear menu → SSH keys…, auto-opens on
+  SSH auth failures) does this in-app via `ssh-add`. If no agent is running,
+  start one first (`eval $(ssh-agent)` / OpenSSH Authentication Agent service).
+- Drag-drop history rewrites use `git rebase -i --rebase-merges` — merge
+  commits in the range are preserved, but you can't move or squash a merge
+  commit itself (git can't reorder merge lines).

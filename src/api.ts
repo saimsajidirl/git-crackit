@@ -19,6 +19,8 @@ export const api = {
     invoke<void>("set_credentials", { username, password, remember }),
   getCredentials: () => invoke<CredentialStatus>("get_credentials"),
   clearCredentials: () => invoke<void>("clear_credentials"),
+  listSshKeys: () => invoke<string[]>("list_ssh_keys"),
+  loadSshKey: (path: string, passphrase: string) => invoke<string>("load_ssh_key", { path, passphrase }),
   openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
 
   getStatus: () => invoke<FileChange[]>("get_status"),

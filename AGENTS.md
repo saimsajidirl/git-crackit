@@ -37,9 +37,13 @@ React 18 + TypeScript + Vite.
   to the system `git` CLI — see `is_ssh_url`/`git_net`/`git_clone` in
   `helpers.rs`. CLI ops use the user's ssh-agent/`~/.ssh/config` with
   `BatchMode=yes`, inject stored HTTPS creds via a `credential.helper`, and map
-  stderr (`Permission denied` → SSH hint, `401/403`/auth → `AUTH:` dialog,
+  stderr (`Permission denied` → `SSH:` dialog, `401/403`/auth → `AUTH:` dialog,
   `non-fast-forward` → pull-first hint). SSH clone parses `Receiving objects:`
-  progress → `clone-progress` events.
+  progress → `clone-progress` events. `SSH:` errors (and gear menu → SSH keys…)
+  open `SshKeyDialog`, which runs `ssh-add` via an `SSH_ASKPASS` echo script
+  (`load_ssh_key`) — passphrase-protected keys load into the agent in-app;
+  `list_ssh_keys` scans ~/.ssh for private-key files. Agent itself must be
+  running already.
 - HTTPS auth = username + token via Credentials dialog; `Remember me` stores
   creds in the OS keychain via `keyring` (state.json plaintext fallback,
   auto-migrated); `AppState::default` reloads; `AUTH:`-prefixed backend errors
@@ -68,16 +72,21 @@ React 18 + TypeScript + Vite.
   side-by-side on a checkerboard, "(absent)" for added/deleted sides.
 - Drag-drop history ops: commit rows are draggable (`application/x-gc-commit`);
   dropping on a commit opens a menu — cherry-pick, move-after, squash-into.
-  `rebase_commit_action` scripts a `git rebase -i` (GIT_SEQUENCE_EDITOR with a
-  generated todo list); move/squash confirm first since they rewrite history.
+  `rebase_commit_action` scripts a `git rebase -i --rebase-merges`
+  (GIT_SEQUENCE_EDITOR awk script rewrites the todo in place — merge commits
+  preserved; moving/squashing a merge commit is rejected). Move/squash confirm
+  first since they rewrite history.
 - Auto-updates: `tauri-plugin-updater` + `tauri-plugin-process` (relaunch).
   Endpoint = `releases/latest/download/latest.json` on the project GitHub
   repo. Signing: minisign keypair generated via `npx tauri signer generate`
   (`~/.tauri/git-crackit.key` — private, never commit); pubkey lives in
   `tauri.conf.json` plugins.updater. Releases: `.github/workflows/release.yml`
   builds all 3 OSes on `v*` tags via tauri-action (needs repo secrets
-  `TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]`). Platform code-signing certs
-  (Apple/EV) are NOT set up — installers are unsigned.
+  `TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]`). The workflow also forwards the
+  standard signing env vars (`APPLE_CERTIFICATE[_PASSWORD]`,
+  `APPLE_SIGNING_IDENTITY`, `APPLE_ID/PASSWORD/TEAM_ID` for notarization,
+  `WINDOWS_CERTIFICATE[_PASSWORD]` for a .pfx) — installers become signed
+  automatically once those secrets exist; until then they're unsigned.
 - Accessibility: `role="menu/menuitem/separator"` + arrow-key nav in context
   menus, `aria-modal`+`aria-labelledby` dialogs, `role="tab"` seg control,
   `aria-live` toast stack, `role="status/alert"` banners, image `alt` text.

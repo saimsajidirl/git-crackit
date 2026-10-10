@@ -25,6 +25,7 @@ export interface ToolbarProps {
   onRemotes: () => void;
   onSettings: () => void;
   onCredentials: () => void;
+  onSshKeys: () => void;
   onCheckUpdates: () => void;
   onPullRequests: () => void;
   onIssues: () => void;
@@ -262,7 +263,10 @@ export function Toolbar(p: ToolbarProps) {
                 <Icon name="repo" size={14} /> Submodules…
               </button>
               <button className="menu-item" onClick={() => { close(); p.onCredentials(); }}>
-                <Icon name="gear" size={14} /> Credentials…
+                <Icon name="gear" size={14} /> HTTPS credentials…
+              </button>
+              <button className="menu-item" onClick={() => { close(); p.onSshKeys(); }}>
+                <Icon name="cloud" size={14} /> SSH keys…
               </button>
               <div className="menu-separator" />
               <button className="menu-item" onClick={() => { close(); p.onSettings(); }}>

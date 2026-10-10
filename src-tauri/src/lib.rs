@@ -32,6 +32,8 @@ pub fn run() {
             cmds_repo::get_credentials,
             cmds_repo::clear_credentials,
             cmds_repo::open_external_url,
+            cmds_repo::list_ssh_keys,
+            cmds_repo::load_ssh_key,
             // working tree / files
             cmds_files::get_status,
             cmds_files::stage_files,

@@ -147,6 +147,84 @@ fn stash_files_and_diff() {
     assert_eq!(du.status, "added");
 }
 
+fn git_cli(dir: &str, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn rebase_action_preserves_merge_commits() {
+    let dir = "/tmp/git-crackit-rebase-e2e";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+
+    // Fixture via git CLI: base → m-work + side-work → merge → p1 → p2.
+    git_cli(dir, &["init", "-b", "main"]);
+    git_cli(dir, &["config", "user.email", "t@e.com"]);
+    git_cli(dir, &["config", "user.name", "T"]);
+    git_cli(dir, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(format!("{}/a.txt", dir), "1\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "base"]);
+    git_cli(dir, &["branch", "side"]);
+    std::fs::write(format!("{}/m.txt", dir), "m\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "main work"]);
+    let m_work = git_cli(dir, &["rev-parse", "HEAD"]);
+    git_cli(dir, &["checkout", "-q", "side"]);
+    std::fs::write(format!("{}/s.txt", dir), "s\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "side work"]);
+    git_cli(dir, &["checkout", "-q", "main"]);
+    git_cli(dir, &["merge", "-q", "--no-ff", "side", "-m", "merge side"]);
+    std::fs::write(format!("{}/p1.txt", dir), "1\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "p1"]);
+    std::fs::write(format!("{}/p2.txt", dir), "2\n").unwrap();
+    git_cli(dir, &["add", "-A"]);
+    git_cli(dir, &["commit", "-qm", "p2"]);
+    let p2 = git_cli(dir, &["rev-parse", "HEAD"]);
+
+    let app = tauri::test::mock_app();
+    app.manage(AppState::default());
+    let handle = app.handle().clone();
+    cmds_repo::open_repository(handle.clone(), app.state(), dir.into()).unwrap();
+
+    // Move "main work" (older than the merge) after p2 — merge is inside range.
+    let res = cmds_branches::rebase_commit_action(
+        app.state(),
+        m_work.clone(),
+        p2.clone(),
+        "move_after".into(),
+    )
+    .unwrap();
+    assert_eq!(res.status, "merged", "rebase failed: {:?}", res.conflicts);
+
+    let h = cmds_history::get_history(app.state(), None, None, None, None).unwrap();
+    assert_eq!(h[0].summary, "main work", "order: {:?}", h.iter().map(|c| &c.summary).collect::<Vec<_>>());
+    assert_eq!(h[1].summary, "p2");
+    assert_eq!(h[2].summary, "p1");
+
+    // The merge commit must still exist in the rewritten history.
+    let repo = git2::Repository::open(dir).unwrap();
+    let mut walk = repo.revwalk().unwrap();
+    walk.push_head().unwrap();
+    let has_merge = walk
+        .flatten()
+        .any(|oid| repo.find_commit(oid).unwrap().parent_count() == 2);
+    assert!(has_merge, "merge commit was lost by the rebase");
+}
+
 #[test]
 fn ssh_remote_dispatches_to_git_cli() {
     use git_crackit::cmds_remotes;

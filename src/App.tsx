@@ -19,7 +19,7 @@ import { CommandPalette, type Command } from "./components/CommandPalette";
 import {
   CloneDialog, InitDialog, ConfirmDialog, NewBranchDialog, PickBranchDialog,
   RenameBranchDialog, StashDialog, TagsDialog, RemotesDialog, SettingsDialog,
-  CredentialsDialog, SubmodulesDialog, PullRequestsDialog, IssuesDialog,
+  CredentialsDialog, SubmodulesDialog, PullRequestsDialog, IssuesDialog, SshKeyDialog,
 } from "./components/Dialogs";
 
 type Dialog =
@@ -37,6 +37,7 @@ type Dialog =
   | { kind: "issues" }
   | { kind: "settings" }
   | { kind: "credentials" }
+  | { kind: "sshkey" }
   | { kind: "confirm"; title: string; message: React.ReactNode; confirmLabel?: string; danger?: boolean; onConfirm: () => void };
 
 const PAGE = 300;
@@ -195,6 +196,10 @@ export default function App() {
           pendingRetry.current = () => run(label, fn, opts);
           setDialog({ kind: "credentials" });
           setError(null);
+        } else if (m.startsWith("SSH:")) {
+          pendingRetry.current = () => run(label, fn, opts);
+          setDialog({ kind: "sshkey" });
+          setError(m.replace(/^SSH:\s*/, "SSH "));
         } else {
           setError(m);
         }
@@ -590,6 +595,7 @@ export default function App() {
       add("Settings", "Submodules…", () => setDialog({ kind: "submodules" }), "repo");
       add("Settings", "Repository settings…", () => setDialog({ kind: "settings" }), "gear");
       add("Settings", "HTTPS credentials…", () => setDialog({ kind: "credentials" }), "cloud");
+      add("Settings", "SSH keys…", () => setDialog({ kind: "sshkey" }), "cloud");
       add("Settings", "Refresh", refreshAll, "sync", "F5");
       add("App", "Check for updates…", () => checkUpdates(true), "download");
     }
@@ -626,6 +632,7 @@ export default function App() {
         onRemotes={() => setDialog({ kind: "remotes" })}
         onSettings={() => setDialog({ kind: "settings" })}
         onCredentials={() => setDialog({ kind: "credentials" })}
+        onSshKeys={() => setDialog({ kind: "sshkey" })}
         onCheckUpdates={() => checkUpdates(true)}
         onPullRequests={() => setDialog({ kind: "prs" })}
         onIssues={() => setDialog({ kind: "issues" })}
@@ -871,6 +878,17 @@ export default function App() {
           onClose={() => setDialog(null)}
           onError={setError}
           onSaved={() => {
+            const r = pendingRetry.current;
+            pendingRetry.current = null;
+            r?.();
+          }}
+        />
+      )}
+      {dialog?.kind === "sshkey" && (
+        <SshKeyDialog
+          onClose={() => setDialog(null)}
+          onError={setError}
+          onLoaded={() => {
             const r = pendingRetry.current;
             pendingRetry.current = null;
             r?.();

@@ -246,11 +246,20 @@ pub fn rebase_commit_action(
     let commit = repo
         .find_commit(commit_oid)
         .map_err(|e| e.message().to_string())?;
+    if commit.parent_count() > 1 {
+        return Err(
+            "Can't move or squash a merge commit — drag it onto a regular commit instead."
+                .into(),
+        );
+    }
     let parent = commit.parent(0).ok().map(|p| p.id().to_string());
     let act = if action == "squash_into" { "fixup" } else { "pick" };
 
     // Sequence editor: rewrite the todo file — drop `move` line, re-emit it
-    // (with action `act`) right after the `after` line.
+    // (with action `act`) right after the `after` line. With --rebase-merges
+    // the todo also contains label/reset/merge -C lines; merge -C entries are
+    // valid drop targets (a pick/fixup placed after one lands inside that
+    // merge's replayed result).
     let script = r#"#!/bin/sh
 awk -v move="$GC_MOVE" -v after="$GC_AFTER" -v act="$GC_ACTION" '
 { lines[NR] = $0 }
@@ -266,11 +275,12 @@ END {
   for (i = 1; i <= NR; i++) {
     if (i == mi) continue
     print lines[i]
-    split(lines[i], a, " ")
-    if (!done && index(after, a[2]) == 1) { print ml; done = 1 }
+    n = split(lines[i], a, " ")
+    oid = (a[1] == "pick") ? a[2] : ((a[1] == "merge" && a[2] == "-C") ? a[3] : "")
+    if (!done && oid != "" && index(after, oid) == 1) { print ml; done = 1 }
   }
   if (!done) { print "target not found in rebase todo" > "/dev/stderr"; exit 1 }
-}' "$1"
+}' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
 "#;
     let script_dir = dirs::config_dir()
         .map(|d| d.join("git-crackit"))
@@ -293,8 +303,8 @@ END {
         .env("GC_AFTER", &target)
         .env("GC_ACTION", act);
     match parent {
-        Some(p) => cmd.args(["rebase", "-i", &p]),
-        None => cmd.args(["rebase", "-i", "--root"]),
+        Some(p) => cmd.args(["rebase", "-i", "--rebase-merges", &p]),
+        None => cmd.args(["rebase", "-i", "--rebase-merges", "--root"]),
     };
     let out = cmd.output().map_err(|e| format!("git not found: {}", e))?;
     let _ = std::fs::remove_file(&script_path);

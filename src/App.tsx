@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import type {
   RepoInfo, FileChange, CommitInfo, CommitDetail, FileDiff, BranchInfo,
-  MergeResult, BlameHunkInfo, RecentRepos,
+  MergeResult, BlameHunkInfo, RecentRepos, StashInfo, StashFileInfo,
 } from "./types";
 import { Toolbar } from "./components/Toolbar";
 import { Welcome } from "./components/Welcome";
@@ -53,6 +53,11 @@ export default function App() {
   const [changes, setChanges] = useState<FileChange[]>([]);
   const [selFile, setSelFile] = useState<FileSelection | null>(null);
   const [workDiff, setWorkDiff] = useState<FileDiff | null>(null);
+  const [stashes, setStashes] = useState<StashInfo[]>([]);
+  const [expandedStash, setExpandedStash] = useState<number | null>(null);
+  const [stashFilesMap, setStashFilesMap] = useState<Record<number, StashFileInfo[]>>({});
+  const [stashSel, setStashSel] = useState<{ index: number; file: string } | null>(null);
+  const [stashDiff, setStashDiff] = useState<FileDiff | null>(null);
 
   const [commits, setCommits] = useState<CommitInfo[]>([]);
   const [query, setQuery] = useState("");
@@ -123,12 +128,45 @@ export default function App() {
     setCommits((prev) => [...prev, ...list]);
   }, [commits.length, query]);
 
+  const expandedStashRef = useRef<number | null>(null);
+  expandedStashRef.current = expandedStash;
+  const stashSelRef = useRef<{ index: number; file: string } | null>(null);
+  stashSelRef.current = stashSel;
+
+  const loadStashFiles = useCallback((index: number) => {
+    api.stashFiles(index)
+      .then((files) => setStashFilesMap((m) => ({ ...m, [index]: files })))
+      .catch((e) => {
+        // Keep the row expanded but stop the spinner and surface the real error.
+        setStashFilesMap((m) => ({ ...m, [index]: [] }));
+        setError(String(e));
+      });
+  }, []);
+
+  const loadStashes = useCallback(async () => {
+    let list: StashInfo[] = [];
+    try {
+      list = await api.listStashes();
+    } catch { /* no repo */ }
+    setStashes(list);
+    setStashFilesMap({});
+    // Collapse only when the stash actually went away; keep UI state otherwise.
+    const exp = expandedStashRef.current;
+    if (exp !== null && list.some((s) => s.index === exp)) loadStashFiles(exp);
+    else if (exp !== null) setExpandedStash(null);
+    const sel = stashSelRef.current;
+    if (sel && !list.some((s) => s.index === sel.index)) {
+      setStashSel(null);
+      setStashDiff(null);
+    }
+  }, [loadStashFiles]);
+
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshInfo(), refreshStatus(), refreshBranches(), loadHistory(query, true)]);
+    await Promise.all([refreshInfo(), refreshStatus(), refreshBranches(), loadHistory(query, true), loadStashes()]);
     if (selFile) {
       api.getWorkingDiff(selFile.path, selFile.staged).then(setWorkDiff).catch(() => setWorkDiff(null));
     }
-  }, [refreshInfo, refreshStatus, refreshBranches, loadHistory, query, selFile]);
+  }, [refreshInfo, refreshStatus, refreshBranches, loadHistory, loadStashes, query, selFile]);
 
   /* ---------- op runner ---------- */
 
@@ -259,15 +297,34 @@ export default function App() {
       // No remembered credentials → offer sign-in (asked again each launch until saved).
       const creds = await api.getCredentials().catch(() => null);
       if (creds && !creds.has_password) setDialog({ kind: "credentials" });
+      // Silent update check on launch.
+      checkUpdates(false);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* ---------- selections ---------- */
 
   const selectFile = useCallback((sel: FileSelection) => {
     setSelFile(sel);
+    setStashSel(null);
     setBlame(null);
     api.getWorkingDiff(sel.path, sel.staged).then(setWorkDiff).catch((e) => setError(String(e)));
+  }, []);
+
+  const toggleStash = useCallback((index: number) => {
+    setExpandedStash((cur) => (cur === index ? null : index));
+    loadStashFiles(index);
+  }, [loadStashFiles]);
+
+  const selectStashFile = useCallback((index: number, path: string) => {
+    setSelFile(null);
+    setBlame(null);
+    setStashSel({ index, file: path });
+    api.stashFileDiff(index, path).then(setStashDiff).catch((e) => {
+      setStashDiff(null);
+      setError(String(e));
+    });
   }, []);
 
   const selectCommit = useCallback((oid: string) => {
@@ -328,6 +385,79 @@ export default function App() {
     ];
     setMenu({ x: e.clientX, y: e.clientY, items });
   };
+
+  const stashMenu = (e: React.MouseEvent, s: StashInfo) => {
+    e.preventDefault();
+    setMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        { label: "Apply stash", onClick: () => run("Applying stash…", () => api.stashApply(s.index)) },
+        { label: "Pop stash (apply + drop)", onClick: () => run("Popping stash…", () => api.stashPop(s.index)) },
+        { label: "", separator: true },
+        {
+          label: "Drop stash…",
+          danger: true,
+          onClick: () =>
+            setDialog({
+              kind: "confirm",
+              title: "Drop stash",
+              message: <>Drop <code>{`stash@{${s.index}}`}</code> — "{s.message}"? This cannot be undone.</>,
+              confirmLabel: "Drop",
+              danger: true,
+              onConfirm: () => run("Dropping stash…", () => api.stashDrop(s.index)),
+            }),
+        },
+        { label: "", separator: true },
+        { label: "Manage all stashes…", onClick: () => setDialog({ kind: "stash" }) },
+      ],
+    });
+  };
+
+  /** Check the update endpoint; quiet unless `manual`. */
+  const checkUpdates = useCallback(async (manual: boolean) => {
+    try {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (!update) {
+        if (manual) setNotice("You're on the latest version.");
+        return;
+      }
+      setDialog({
+        kind: "confirm",
+        title: `Update available — v${update.version}`,
+        message: (
+          <>
+            {update.body && <p className="muted small" style={{ whiteSpace: "pre-wrap", marginBottom: 8 }}>{update.body}</p>}
+            Download and install v{update.version}? The app will restart.
+          </>
+        ),
+        confirmLabel: "Update & restart",
+        onConfirm: async () => {
+          try {
+            setBusy("Downloading update…");
+            let downloaded = 0;
+            let total = 0;
+            await update.downloadAndInstall((e) => {
+              if (e.event === "Started" && e.data.contentLength) total = e.data.contentLength;
+              else if (e.event === "Progress") {
+                downloaded += e.data.chunkLength;
+                if (total) setBusy(`Downloading update… ${Math.round((downloaded / total) * 100)}%`);
+              }
+            });
+            const { relaunch } = await import("@tauri-apps/plugin-process");
+            await relaunch();
+          } catch (e) {
+            setError(`Update failed: ${e}`);
+          } finally {
+            setBusy(null);
+          }
+        },
+      });
+    } catch (e) {
+      if (manual) setError(`Update check failed: ${e}`);
+    }
+  }, []);
 
   const commitMenu = (e: React.MouseEvent, c: CommitInfo) => {
     e.preventDefault();
@@ -461,6 +591,7 @@ export default function App() {
       add("Settings", "Repository settings…", () => setDialog({ kind: "settings" }), "gear");
       add("Settings", "HTTPS credentials…", () => setDialog({ kind: "credentials" }), "cloud");
       add("Settings", "Refresh", refreshAll, "sync", "F5");
+      add("App", "Check for updates…", () => checkUpdates(true), "download");
     }
     add("Appearance", theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
       () => setTheme((t) => (t === "dark" ? "light" : "dark")), theme === "dark" ? "sun" : "moon");
@@ -495,6 +626,7 @@ export default function App() {
         onRemotes={() => setDialog({ kind: "remotes" })}
         onSettings={() => setDialog({ kind: "settings" })}
         onCredentials={() => setDialog({ kind: "credentials" })}
+        onCheckUpdates={() => checkUpdates(true)}
         onPullRequests={() => setDialog({ kind: "prs" })}
         onIssues={() => setDialog({ kind: "issues" })}
         onCloseRepo={() => run("Closing…", async () => { await api.closeRepository(); setRepo(null); setChanges([]); setCommits([]); setDetail(null); setSelFile(null); }, { refresh: false })}
@@ -508,7 +640,7 @@ export default function App() {
       />
 
       {(error || notice) && (
-        <div className="toast-stack">
+        <div className="toast-stack" aria-live="polite">
           {error && (
             <div className="toast error" role="alert">
               <Icon name="alert" size={15} />
@@ -526,7 +658,7 @@ export default function App() {
         </div>
       )}
       {repo && repo.uses_lfs && !repo.lfs_installed && (
-        <div className="banner warn">
+        <div className="banner warn" role="status">
           <Icon name="alert" size={14} />
           <span className="grow">
             This repository uses <b>Git LFS</b> but <code>git-lfs</code> isn't installed — large files will appear as pointer text files. Install it to fetch real contents.
@@ -534,7 +666,7 @@ export default function App() {
         </div>
       )}
       {repo && repo.state !== "clean" && (
-        <div className="banner warn">
+        <div className="banner warn" role="alert">
           <Icon name="alert" size={14} />
           <span className="grow">
             Repository is in <b>{repo.state.replace("_", " ")}</b> state. Resolve conflicts, stage files, and commit to finish.
@@ -586,6 +718,13 @@ export default function App() {
                 }
                 onStashAll={() => setDialog({ kind: "stash" })}
                 onContextMenu={fileMenu}
+                stashes={stashes}
+                expandedStash={expandedStash}
+                stashFiles={stashFilesMap}
+                stashSel={stashSel}
+                onToggleStash={toggleStash}
+                onSelectStashFile={selectStashFile}
+                onStashContext={stashMenu}
                 headName={headName}
                 repoState={repo.state}
                 isUnborn={repo.is_unborn}
@@ -626,7 +765,18 @@ export default function App() {
                 </div>
               </div>
             ) : tab === "changes" ? (
-              <DiffView diff={workDiff} staged={selFile?.staged ?? false} />
+              stashSel ? (
+                <div className="stash-diff-wrap">
+                  <div className="stash-diff-banner">
+                    <Icon name="stash" size={13} />
+                    <span>{`stash@{${stashSel.index}} — stashed changes (read-only)`}</span>
+                    <button className="btn small" onClick={() => setStashSel(null)}>Back to working tree</button>
+                  </div>
+                  <DiffView diff={stashDiff} staged={false} />
+                </div>
+              ) : (
+                <DiffView diff={workDiff} staged={selFile?.staged ?? false} />
+              )
             ) : (
               <CommitDetailView detail={detail} onError={setError} />
             )}

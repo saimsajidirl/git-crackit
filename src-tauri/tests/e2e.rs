@@ -117,6 +117,37 @@ fn full_workflow() {
 }
 
 #[test]
+fn stash_files_and_diff() {
+    use git_crackit::cmds_stash_tags;
+    let dir = "/tmp/git-crackit-stash-e2e";
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+
+    let app = tauri::test::mock_app();
+    app.manage(AppState::default());
+    let handle = app.handle().clone();
+
+    cmds_repo::init_repository(handle.clone(), app.state(), dir.into(), Some(false)).unwrap();
+    cmds_files::set_git_identity(app.state(), "T".into(), "t@e.com".into(), Some(false)).unwrap();
+    std::fs::write(format!("{}/a.txt", dir), "one\n").unwrap();
+    cmds_files::stage_all(app.state()).unwrap();
+    cmds_files::create_commit(app.state(), "init".into(), None).unwrap();
+    std::fs::write(format!("{}/a.txt", dir), "one\ntwo\n").unwrap();
+    std::fs::write(format!("{}/u.txt", dir), "untracked\n").unwrap();
+    cmds_stash_tags::stash_save(app.state(), "wip".into(), Some(true)).unwrap();
+
+    let files = cmds_stash_tags::stash_files(app.state(), 0).unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"a.txt"), "tracked file missing: {:?}", paths);
+    assert!(paths.contains(&"u.txt"), "untracked file missing: {:?}", paths);
+
+    let d = cmds_stash_tags::stash_file_diff(app.state(), 0, "a.txt".into()).unwrap();
+    assert_eq!(d.additions, 1);
+    let du = cmds_stash_tags::stash_file_diff(app.state(), 0, "u.txt".into()).unwrap();
+    assert_eq!(du.status, "added");
+}
+
+#[test]
 fn ssh_remote_dispatches_to_git_cli() {
     use git_crackit::cmds_remotes;
     let dir = "/tmp/git-crackit-ssh-e2e";

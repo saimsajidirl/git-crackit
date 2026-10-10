@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   RepoInfo, FileChange, CommitInfo, CommitDetail, FileDiff, BranchInfo,
-  RemoteInfo, StashInfo, TagInfo, MergeResult, BlameHunkInfo, SubmoduleInfo,
+  RemoteInfo, StashInfo, StashFileInfo, TagInfo, MergeResult, BlameHunkInfo, SubmoduleInfo,
   GitConfigInfo, RecentRepos, CredentialStatus,
   GhRepo, GhUser, GhPR, GhIssue, GhCheckStatus, DeviceFlow, DevicePoll, ImageDiff,
 } from "./types";
@@ -89,6 +89,9 @@ export const api = {
   githubDevicePoll: (deviceCode: string) => invoke<DevicePoll>("github_device_poll", { deviceCode }),
 
   listStashes: () => invoke<StashInfo[]>("list_stashes"),
+  stashFiles: (index: number) => invoke<StashFileInfo[]>("stash_files", { index }),
+  stashFileDiff: (index: number, path: string) =>
+    invoke<FileDiff>("stash_file_diff", { index, path }),
   stashSave: (message: string, includeUntracked: boolean) =>
     invoke<void>("stash_save", { message, includeUntracked }),
   stashApply: (index: number) => invoke<MergeResult>("stash_apply", { index }),

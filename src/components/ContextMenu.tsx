@@ -25,10 +25,22 @@ export function ContextMenu({
     const onDown = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) onClose();
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const focusItem = (dir: 1 | -1) => {
+      const btns = Array.from(ref.current?.querySelectorAll<HTMLButtonElement>(".menu-item:not(:disabled)") ?? []);
+      if (!btns.length) return;
+      const i = btns.indexOf(document.activeElement as HTMLButtonElement);
+      btns[(i + dir + btns.length) % btns.length].focus();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowDown") { e.preventDefault(); focusItem(1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); focusItem(-1); }
+      else if (e.key === "Home") { e.preventDefault(); focusItem(1); }
+    };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
     window.addEventListener("blur", onClose);
+    ref.current?.querySelector<HTMLButtonElement>(".menu-item:not(:disabled)")?.focus();
     return () => {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
@@ -43,14 +55,15 @@ export function ContextMenu({
   if (x + 240 > window.innerWidth) style.left = window.innerWidth - 244;
 
   return (
-    <div className="context-menu" style={style} ref={ref}>
+    <div className="context-menu" style={style} ref={ref} role="menu">
       {items.map((it, i) =>
         it.separator ? (
-          <div key={i} className="menu-separator" />
+          <div key={i} className="menu-separator" role="separator" />
         ) : (
           <button
             key={i}
             className={"menu-item" + (it.danger ? " danger" : "")}
+            role="menuitem"
             disabled={it.disabled}
             onClick={() => {
               onClose();
@@ -98,6 +111,7 @@ export function Dropdown({
     <div
       className={align === "right" ? "dropdown align-right" : "dropdown"}
       ref={ref}
+      role="menu"
       style={{ [align === "right" ? "right" : "left"]: 0, width }}
     >
       {children}

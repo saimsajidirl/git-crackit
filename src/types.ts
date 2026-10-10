@@ -105,6 +105,11 @@ export interface StashInfo {
   time: number;
 }
 
+export interface StashFileInfo {
+  path: string;
+  status: string;
+}
+
 export interface TagInfo {
   name: string;
   oid: string;

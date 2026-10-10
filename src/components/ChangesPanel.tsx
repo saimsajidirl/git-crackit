@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from "react";
-import type { FileChange } from "../types";
+import type { FileChange, StashFileInfo, StashInfo } from "../types";
 import { Icon } from "../icons";
 import { Dropdown } from "./ContextMenu";
-import { cx, dirName, fileName, statusLetter } from "../util";
+import { cx, dirName, fileName, statusLetter, timeAgo } from "../util";
 
 export interface FileSelection {
   path: string;
@@ -20,6 +20,13 @@ export function ChangesPanel({
   onContextMenu,
   onDiscardAll,
   onStashAll,
+  stashes,
+  expandedStash,
+  stashFiles,
+  stashSel,
+  onToggleStash,
+  onSelectStashFile,
+  onStashContext,
   headName,
   repoState,
   isUnborn,
@@ -35,6 +42,13 @@ export function ChangesPanel({
   onContextMenu: (e: React.MouseEvent, f: FileChange) => void;
   onDiscardAll: () => void;
   onStashAll: () => void;
+  stashes: StashInfo[];
+  expandedStash: number | null;
+  stashFiles: Record<number, StashFileInfo[]>;
+  stashSel: { index: number; file: string } | null;
+  onToggleStash: (index: number) => void;
+  onSelectStashFile: (index: number, path: string) => void;
+  onStashContext: (e: React.MouseEvent, s: StashInfo) => void;
   headName: string;
   repoState: string;
   isUnborn: boolean;
@@ -147,6 +161,50 @@ export function ChangesPanel({
           </div>
         )}
       </div>
+
+      {stashes.length > 0 && (
+        <div className="stash-section">
+          <div className="stash-section-header">
+            <Icon name="stash" size={13} />
+            <span className="grow">Stashes</span>
+            <span className="badge">{stashes.length}</span>
+          </div>
+          {stashes.map((s) => (
+            <div key={s.index} className="stash-entry">
+              <div
+                className={cx("stash-row", expandedStash === s.index && "open")}
+                onClick={() => onToggleStash(s.index)}
+                onContextMenu={(e) => onStashContext(e, s)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggleStash(s.index); } }}
+              >
+                <Icon name="chevronDown" size={12} className={cx("chev", expandedStash !== s.index && "collapsed")} />
+                <span className="ellipsis grow" title={s.message}>{s.message}</span>
+                <span className="muted small">{timeAgo(s.time)}</span>
+              </div>
+              {expandedStash === s.index && (
+                <div className="stash-files">
+                  {(stashFiles[s.index] ?? []).map((f) => (
+                    <div
+                      key={f.path}
+                      className={cx("file-row stash-file", stashSel?.index === s.index && stashSel.file === f.path && "selected")}
+                      onClick={() => onSelectStashFile(s.index, f.path)}
+                    >
+                      <span className={`status-badge st-${f.status}`}>{statusLetter(f.status)}</span>
+                      <span className="file-path" title={f.path}>
+                        <span className="file-name">{fileName(f.path)}</span>
+                        <span className="file-dir">{dirName(f.path)}</span>
+                      </span>
+                    </div>
+                  ))}
+                  {!stashFiles[s.index] && <div className="muted small stash-loading">Loading…</div>}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="commit-box">
         <div className="commit-box-inner">

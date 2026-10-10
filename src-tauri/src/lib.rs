@@ -89,6 +89,8 @@ pub fn run() {
             gh::github_device_poll,
             // stash & tags
             cmds_stash_tags::list_stashes,
+            cmds_stash_tags::stash_files,
+            cmds_stash_tags::stash_file_diff,
             cmds_stash_tags::stash_save,
             cmds_stash_tags::stash_apply,
             cmds_stash_tags::stash_pop,

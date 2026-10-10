@@ -120,6 +120,12 @@ pub struct StashInfo {
 }
 
 #[derive(Serialize)]
+pub struct StashFileInfo {
+    pub path: String,
+    pub status: String,
+}
+
+#[derive(Serialize)]
 pub struct TagInfo {
     pub name: String,
     pub oid: String,

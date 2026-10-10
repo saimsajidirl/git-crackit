@@ -1,7 +1,7 @@
 # Git Crackit
 
-A Git GUI client — GitKraken-style feature set with a GitHub Desktop-style UI
-(light theme, blue accent widgets). Built with Tauri 2 + Rust (git2/libgit2) +
+A Git GUI client — GitKraken-style feature set with a unique violet/indigo
+theme (light + dark). Built with Tauri 2 + Rust (git2/libgit2) +
 React 18 + TypeScript + Vite.
 
 ## Commands
@@ -20,8 +20,9 @@ React 18 + TypeScript + Vite.
   `cmds_history.rs` (log/detail/cherry-pick/revert/reset),
   `cmds_branches.rs` (branch CRUD/checkout/merge/rebase/abort),
   `cmds_remotes.rs` (remotes/fetch/pull/push/tags push),
-  `cmds_stash_tags.rs` (stash ops, tag CRUD),
-  `helpers.rs` (diff→struct conversion, merge driver, conflict list),
+  `cmds_stash_tags.rs` (stash ops + stash file list/diff, tag CRUD),
+  `helpers.rs` (diff→struct conversion, merge driver, conflict list,
+  SSH transport helpers, LFS helpers, git CLI runner),
   `state.rs` (current repo path, HTTPS credentials, persisted recents in
   `~/.config/git-crackit/state.json`).
 - `src/` — React frontend. `api.ts` wraps `invoke`, `App.tsx` orchestrates,
@@ -54,3 +55,29 @@ React 18 + TypeScript + Vite.
   `pr-N` (SSH/HTTPS aware). Frontend: PullRequests/Issues dialogs (gear menu +
   palette), `Avatar` renders real GitHub avatars via `ID+login@users.noreply`
   email parsing or `avatar_url`; CSP `img-src` allows avatars.githubusercontent.com.
+- Stashes: `list_stashes` + `stash_files`/`stash_file_diff` (diffs base
+  commit→stash commit, third parent = untracked files). Sidebar "Stashes"
+  section in ChangesPanel expands each stash to its file list; clicking a file
+  shows a read-only diff with a "stash@{n}" banner; context menu apply/pop/drop.
+- Git LFS: `RepoInfo.uses_lfs`/`lfs_installed` flag repos whose `.gitattributes`
+  contains `filter=lfs` and whether `git-lfs` is on PATH. Clone/pull/checkout
+  run `git lfs pull|checkout` hooks when available; a warning banner shows when
+  the repo uses LFS but the binary is missing (defensive — host may lack it).
+- Image diffs: `get_image_diff(path, staged)` returns base64 old/new blobs;
+  `DiffView` renders image files (png/jpg/gif/webp/bmp/ico/svg/avif)
+  side-by-side on a checkerboard, "(absent)" for added/deleted sides.
+- Drag-drop history ops: commit rows are draggable (`application/x-gc-commit`);
+  dropping on a commit opens a menu — cherry-pick, move-after, squash-into.
+  `rebase_commit_action` scripts a `git rebase -i` (GIT_SEQUENCE_EDITOR with a
+  generated todo list); move/squash confirm first since they rewrite history.
+- Auto-updates: `tauri-plugin-updater` + `tauri-plugin-process` (relaunch).
+  Endpoint = `releases/latest/download/latest.json` on the project GitHub
+  repo. Signing: minisign keypair generated via `npx tauri signer generate`
+  (`~/.tauri/git-crackit.key` — private, never commit); pubkey lives in
+  `tauri.conf.json` plugins.updater. Releases: `.github/workflows/release.yml`
+  builds all 3 OSes on `v*` tags via tauri-action (needs repo secrets
+  `TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]`). Platform code-signing certs
+  (Apple/EV) are NOT set up — installers are unsigned.
+- Accessibility: `role="menu/menuitem/separator"` + arrow-key nav in context
+  menus, `aria-modal`+`aria-labelledby` dialogs, `role="tab"` seg control,
+  `aria-live` toast stack, `role="status/alert"` banners, image `alt` text.

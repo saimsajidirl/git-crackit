@@ -41,7 +41,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUwNjJDQkE1RjYwQUQ3N0IKUldSNzF3cjJwY3RpNEFqYkFOQ2hWUWVEc0V0dll3Z3BMdkYrdi8wWmVxeGRrdzFmeWYyMHpiZHUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEwRkYzOUJCQkVEQUEzOTgKUldTWW85cSt1em4vRUN6SjhhTlplTXVZQko3SzVURU5qbzF5K0pFZDFLWnMvUlFkY3pUSEpyUWUK",
       "endpoints": [
         "https://github.com/saimsajidirl/git-crackit/releases/latest/download/latest.json"
       ]

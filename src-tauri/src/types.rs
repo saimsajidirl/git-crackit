@@ -44,6 +44,7 @@ pub struct CommitInfo {
     pub committer_time: i64,
     pub parents: Vec<String>,
     pub refs: Vec<RefLabel>,
+    pub signed: bool,
 }
 
 #[derive(Serialize)]
@@ -59,6 +60,15 @@ pub struct ChangedFile {
 pub struct CommitDetail {
     pub commit: CommitInfo,
     pub files: Vec<ChangedFile>,
+}
+
+#[derive(Serialize)]
+pub struct CompareResult {
+    pub files: Vec<ChangedFile>,
+    /// Commits `compare` has that `base` lacks.
+    pub ahead: usize,
+    /// Commits `base` has that `compare` lacks.
+    pub behind: usize,
 }
 
 #[derive(Serialize)]
@@ -135,6 +145,14 @@ pub struct TagInfo {
 }
 
 #[derive(Serialize)]
+pub struct CheckoutOutcome {
+    /// "ok" | "dirty" | "conflicts"
+    pub status: String,
+    pub dirty_files: usize,
+    pub conflicts: Vec<String>,
+}
+
+#[derive(Serialize)]
 pub struct MergeResult {
     pub status: String, // "up_to_date" | "fast_forward" | "merged" | "conflicts" | "unborn"
     pub conflicts: Vec<String>,
@@ -176,6 +194,9 @@ pub struct ImageDiff {
 pub struct GitConfigInfo {
     pub name: Option<String>,
     pub email: Option<String>,
+    pub gpgsign: bool,
+    pub signingkey: Option<String>,
+    pub gpgformat: String,
 }
 
 #[derive(Serialize)]

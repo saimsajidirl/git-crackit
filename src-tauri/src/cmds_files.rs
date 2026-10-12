@@ -266,13 +266,36 @@ pub fn create_commit(state: State<AppState>, message: String, amend: Option<bool
     let tree_oid = index.write_tree().map_err(|e| e.message().to_string())?;
     let tree = repo.find_tree(tree_oid).map_err(|e| e.message().to_string())?;
 
+    // Soft undo points — ref-only restore keeps the commit's content staged.
+    let undo = head_point(
+        &repo,
+        if amend.unwrap_or(false) { "Amend commit" } else { "Commit" },
+        true,
+    );
+
     if amend.unwrap_or(false) {
         let head = repo.head().map_err(|e| e.message().to_string())?;
         let head_commit = head.peel_to_commit().map_err(|e| e.message().to_string())?;
-        let oid = head_commit
-            .amend(Some("HEAD"), None, None, None, Some(&message), Some(&tree))
-            .map_err(|e| e.message().to_string())?;
+        let oid = if sign_enabled(&repo) {
+            // commit.amend() can't sign — replicate: keep author + parents.
+            let parents: Vec<git2::Commit> =
+                head_commit.parents().collect();
+            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+            commit_maybe_signed(
+                &repo,
+                &head_commit.author(),
+                &signature,
+                &message,
+                &tree,
+                &parent_refs,
+            )?
+        } else {
+            head_commit
+                .amend(Some("HEAD"), None, None, None, Some(&message), Some(&tree))
+                .map_err(|e| e.message().to_string())?
+        };
         repo.cleanup_state().ok();
+        record_undo(&state, undo);
         return Ok(oid.to_string());
     }
 
@@ -300,10 +323,9 @@ pub fn create_commit(state: State<AppState>, message: String, amend: Option<bool
         }
     }
     let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-    let oid = repo
-        .commit(Some("HEAD"), &signature, &signature, &message, &tree, &parent_refs)
-        .map_err(|e| e.message().to_string())?;
+    let oid = commit_maybe_signed(&repo, &signature, &signature, &message, &tree, &parent_refs)?;
     repo.cleanup_state().ok();
+    record_undo(&state, undo);
     Ok(oid.to_string())
 }
 
@@ -417,6 +439,17 @@ pub fn get_git_identity(state: State<AppState>) -> Result<GitConfigInfo, String>
             email = cfg.get_string("user.email").ok().filter(|s| !s.is_empty());
         }
     }
+    let (gpgsign, signingkey, gpgformat) = {
+        let mut v = (false, None, "openpgp".to_string());
+        if let Ok(repo) = open_repo(&state) {
+            if let Ok(cfg) = repo.config() {
+                v.0 = cfg.get_bool("commit.gpgsign").unwrap_or(false);
+                v.1 = cfg.get_string("user.signingkey").ok().filter(|s| !s.is_empty());
+                v.2 = cfg.get_string("gpg.format").unwrap_or_else(|_| "openpgp".into());
+            }
+        }
+        v
+    };
     if name.is_none() || email.is_none() {
         if let Ok(cfg) = git2::Config::open_default() {
             if name.is_none() {
@@ -427,7 +460,41 @@ pub fn get_git_identity(state: State<AppState>) -> Result<GitConfigInfo, String>
             }
         }
     }
-    Ok(GitConfigInfo { name, email })
+    Ok(GitConfigInfo {
+        name,
+        email,
+        gpgsign,
+        signingkey,
+        gpgformat,
+    })
+}
+
+/// Signing config — `commit.gpgsign`, `user.signingkey`, `gpg.format`
+/// ("openpgp" | "ssh"). Written repo-locally unless `global` is set.
+#[tauri::command]
+pub fn set_signing_config(
+    state: State<AppState>,
+    gpgsign: bool,
+    signingkey: Option<String>,
+    format: Option<String>,
+    global: Option<bool>,
+) -> Result<(), String> {
+    let mut cfg = if global.unwrap_or(false) {
+        git2::Config::open_default().map_err(|e| e.message().to_string())?
+    } else {
+        open_repo(&state)?.config().map_err(|e| e.message().to_string())?
+    };
+    cfg.set_bool("commit.gpgsign", gpgsign)
+        .map_err(|e| e.message().to_string())?;
+    if let Some(k) = signingkey.filter(|s| !s.is_empty()) {
+        cfg.set_str("user.signingkey", &k)
+            .map_err(|e| e.message().to_string())?;
+    }
+    if let Some(f) = format {
+        cfg.set_str("gpg.format", &f)
+            .map_err(|e| e.message().to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -448,4 +515,52 @@ pub fn set_git_identity(
         cfg.set_str("user.email", &email).map_err(|e| e.message().to_string())?;
     }
     Ok(())
+}
+
+/* ---------------- Per-hunk staging ---------------- */
+
+/// Shared hunk driver: builds the patch for exactly one hunk and pipes it to
+/// `git apply`. `staged` selects the index↔worktree vs HEAD→index diff;
+/// `reverse`/`cached` map to `git apply` flags.
+fn hunk_op(state: &State<AppState>, path: &str, hunk: usize, staged: bool, reverse: bool, cached: bool) -> Result<(), String> {
+    let repo = open_repo(state)?;
+    let mut opts = DiffOptions::new();
+    opts.pathspec(path)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .context_lines(3);
+    let diff = if staged {
+        let head_tree = repo.head().and_then(|h| h.peel_to_tree()).ok();
+        let index = repo.index().map_err(|e| e.message().to_string())?;
+        repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut opts))
+            .map_err(|e| e.message().to_string())?
+    } else {
+        let index = repo.index().map_err(|e| e.message().to_string())?;
+        repo.diff_index_to_workdir(Some(&index), Some(&mut opts))
+            .map_err(|e| e.message().to_string())?
+    };
+    let patch = hunk_patch_text(&diff, path, hunk)?;
+    let mut args = vec!["apply"];
+    if cached {
+        args.push("--cached");
+    }
+    if reverse {
+        args.push("--reverse");
+    }
+    git_apply(repo_dir(&repo), &args, &patch)
+}
+
+#[tauri::command]
+pub fn stage_hunk(state: State<AppState>, path: String, hunk: usize) -> Result<(), String> {
+    hunk_op(&state, &path, hunk, false, false, true)
+}
+
+#[tauri::command]
+pub fn unstage_hunk(state: State<AppState>, path: String, hunk: usize) -> Result<(), String> {
+    hunk_op(&state, &path, hunk, true, true, true)
+}
+
+#[tauri::command]
+pub fn discard_hunk(state: State<AppState>, path: String, hunk: usize) -> Result<(), String> {
+    hunk_op(&state, &path, hunk, false, true, false)
 }

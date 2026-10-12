@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api } from "./api";
 import type {
   RepoInfo, FileChange, CommitInfo, CommitDetail, FileDiff, BranchInfo,
-  MergeResult, BlameHunkInfo, RecentRepos, StashInfo, StashFileInfo,
+  MergeResult, BlameHunkInfo, RecentRepos, StashInfo, StashFileInfo, CheckoutOutcome,
 } from "./types";
 import { Toolbar } from "./components/Toolbar";
 import { Welcome } from "./components/Welcome";
@@ -17,9 +17,10 @@ import { Icon } from "./icons";
 import { applyTheme, cx, initialTheme, modKey, type Theme } from "./util";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import {
-  CloneDialog, InitDialog, ConfirmDialog, NewBranchDialog, PickBranchDialog,
+  CloneDialog, InitDialog, ConfirmDialog, DirtyCheckoutDialog, NewBranchDialog, PickBranchDialog,
   RenameBranchDialog, StashDialog, TagsDialog, RemotesDialog, SettingsDialog,
   CredentialsDialog, SubmodulesDialog, PullRequestsDialog, IssuesDialog, SshKeyDialog, AboutDialog,
+  FileHistoryDialog, CompareDialog,
 } from "./components/Dialogs";
 
 type Dialog =
@@ -39,7 +40,12 @@ type Dialog =
   | { kind: "credentials" }
   | { kind: "sshkey" }
   | { kind: "about" }
+  | { kind: "fileHistory"; path: string }
+  | { kind: "compare" }
+  | { kind: "dirtyCheckout"; target: string; op: DirtyOpKind; count: number; retry: (mode: "carry" | "stash") => void }
   | { kind: "confirm"; title: string; message: React.ReactNode; confirmLabel?: string; danger?: boolean; onConfirm: () => void };
+
+type DirtyOpKind = "switch" | "merge" | "pull" | "rebase";
 
 const PAGE = 300;
 
@@ -139,6 +145,11 @@ export default function App() {
   expandedStashRef.current = expandedStash;
   const stashSelRef = useRef<{ index: number; file: string } | null>(null);
   stashSelRef.current = stashSel;
+  const selFileRef = useRef<FileSelection | null>(null);
+  selFileRef.current = selFile;
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  const keyOps = useRef<{ undo: () => void; redo: () => void }>({ undo: () => {}, redo: () => {} });
 
   const loadStashFiles = useCallback((index: number) => {
     api.stashFiles(index)
@@ -169,11 +180,12 @@ export default function App() {
   }, [loadStashFiles]);
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshInfo(), refreshStatus(), refreshBranches(), loadHistory(query, true), loadStashes()]);
-    if (selFile) {
-      api.getWorkingDiff(selFile.path, selFile.staged).then(setWorkDiff).catch(() => setWorkDiff(null));
+    await Promise.all([refreshInfo(), refreshStatus(), refreshBranches(), loadHistory(queryRef.current, true), loadStashes()]);
+    const sf = selFileRef.current;
+    if (sf) {
+      api.getWorkingDiff(sf.path, sf.staged).then(setWorkDiff).catch(() => setWorkDiff(null));
     }
-  }, [refreshInfo, refreshStatus, refreshBranches, loadHistory, loadStashes, query, selFile]);
+  }, [refreshInfo, refreshStatus, refreshBranches, loadHistory, loadStashes]);
 
   /* ---------- op runner ---------- */
 
@@ -243,9 +255,6 @@ export default function App() {
 
   /* ---------- live refresh: fs watcher events + window focus + F5 ---------- */
 
-  const selFileRef = useRef<FileSelection | null>(null);
-  selFileRef.current = selFile;
-
   useEffect(() => {
     let timer: number | undefined;
     const un = listen<string>("repo-changed", (e) => {
@@ -289,6 +298,14 @@ export default function App() {
       } else if (mod && e.key === "0") {
         e.preventDefault();
         setZoom(1);
+      } else if (mod && e.key.toLowerCase() === "z") {
+        const el = e.target as HTMLElement | null;
+        const editing = !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+        if (!editing) {
+          e.preventDefault();
+          if (e.shiftKey) keyOps.current.redo();
+          else keyOps.current.undo();
+        }
       }
     };
     window.addEventListener("focus", onFocus);
@@ -355,20 +372,168 @@ export default function App() {
 
   /* ---------- actions ---------- */
 
-  const toggleStage = (f: FileChange, stage: boolean) =>
-    run(stage ? "Staging…" : "Unstaging…", () => (stage ? api.stageFiles([f.path]) : api.unstageFiles([f.path])));
+  const toggleStage = useCallback((f: FileChange, stage: boolean) =>
+    run(stage ? "Staging…" : "Unstaging…", () => (stage ? api.stageFiles([f.path]) : api.unstageFiles([f.path]))), [run]);
 
-  const toggleAll = (stage: boolean) =>
-    run(stage ? "Staging all…" : "Unstaging all…", () => (stage ? api.stageAll() : api.unstageAll()));
+  const toggleMany = useCallback((paths: string[], stage: boolean) =>
+    run(stage ? "Staging…" : "Unstaging…", () => (stage ? api.stageFiles(paths) : api.unstageFiles(paths))), [run]);
 
-  const commit = (message: string, _d: string, amend: boolean) =>
-    run("Committing…", () => api.createCommit(message, amend));
+  const discardMany = useCallback((paths: string[]) =>
+    setDialog({
+      kind: "confirm",
+      title: "Discard changes",
+      message: <>Discard changes in <b>{paths.length}</b> file(s)? This cannot be undone.</>,
+      confirmLabel: "Discard",
+      danger: true,
+      onConfirm: () => run("Discarding…", () => api.discardChanges(paths)),
+    }), [run]);
 
-  const checkout = (name: string) => run(`Checking out ${name}…`, () => api.checkoutBranch(name));
+  const toggleAll = useCallback((stage: boolean) =>
+    run(stage ? "Staging all…" : "Unstaging all…", () => (stage ? api.stageAll() : api.unstageAll())), [run]);
 
-  const fetchOp = () => run("Fetching…", () => api.fetchRemote());
-  const pullOp = () => run("Pulling…", () => api.pull());
-  const pushOp = () => run("Pushing…", () => api.push(true));
+  const commit = useCallback((message: string, _d: string, amend: boolean) =>
+    run("Committing…", () => api.createCommit(message, amend)), [run]);
+
+  const discardAll = useCallback(() =>
+    setDialog({
+      kind: "confirm",
+      title: "Discard all changes",
+      message: <>Discard all changes in <b>{normalCount(changes)}</b> file(s)? This cannot be undone.</>,
+      confirmLabel: "Discard all",
+      danger: true,
+      onConfirm: () => run("Discarding…", () => api.discardChanges(changes.map((c) => c.path))),
+    }), [changes, run]);
+
+  const openStashDialog = useCallback(() => setDialog({ kind: "stash" }), []);
+  const generateMessage = useCallback(() => api.generateCommitMessage(), []);
+  const openAiSettings = useCallback(() => setDialog({ kind: "settings", aiOnly: true }), []);
+  const searchCommits = useCallback((q: string) => { setQuery(q); loadHistory(q, true); }, [loadHistory]);
+
+  // Shared runner for dirty-aware ops (checkout/merge/pull/rebase): "dirty"
+  // outcomes open the dirty-changes dialog, whose choice re-invokes the same
+  // op with "carry" (stash → op → re-apply) or "stash" (keep changes stashed).
+  const dirtyRun = useCallback(async (
+    label: string,
+    spec: { target: string; op: DirtyOpKind },
+    op: (dirty?: "carry" | "stash") => Promise<CheckoutOutcome>,
+    stashed = false,
+  ) => {
+    setBusy(label);
+    setError(null);
+    try {
+      const r = await op();
+      if (r.status === "dirty") {
+        setDialog({
+          kind: "dirtyCheckout", target: spec.target, op: spec.op, count: r.dirty_files,
+          retry: (mode) => { void dirtyRun(label, spec, () => op(mode), true); },
+        });
+        return;
+      }
+      if (r.status === "conflicts") {
+        setNotice(`Finished with conflicts in ${r.conflicts.length} file(s) — resolve, stage, then commit.${stashed ? " Your uncommitted changes were kept in stash@{0}." : ""}`);
+      } else if (r.status === "up_to_date") {
+        setNotice("Already up to date.");
+      }
+      await refreshAll();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }, [refreshAll]);
+
+  const checkout = useCallback(
+    (name: string) => dirtyRun(`Checking out ${name}…`, { target: name, op: "switch" }, (m) => api.checkoutBranch(name, m)),
+    [dirtyRun],
+  );
+
+  const fetchOp = useCallback(() => run("Fetching…", () => api.fetchRemote()), [run]);
+  const pullOp = useCallback(
+    () => dirtyRun("Pulling…", { target: repo?.upstream ?? "origin", op: "pull" }, (m) => api.pull(m)),
+    [dirtyRun, repo?.upstream],
+  );
+  const pushOp = useCallback(
+    () =>
+      run("Pushing…", async () => {
+        try {
+          await api.push(true);
+        } catch (e) {
+          const m = String(e);
+          if (m.includes("non-fast-forward")) {
+            setDialog({
+              kind: "confirm",
+              title: "Push rejected",
+              message: (
+                <>
+                  The remote has commits you don't have locally. <b>Force-push with lease?</b> — it
+                  aborts if the remote moved since your last fetch, so it can't silently clobber
+                  someone else's work.
+                </>
+              ),
+              confirmLabel: "Force-push",
+              danger: true,
+              onConfirm: () => run("Force-pushing…", () => api.push(true, true)),
+            });
+            return; // the confirm dialog drives the retry
+          }
+          throw e; // AUTH:/SSH:/other errors → run's normal handling
+        }
+      }),
+    [run],
+  );
+  const undoOp = useCallback(async () => {
+    setBusy("Undoing…");
+    setError(null);
+    try {
+      setNotice(await api.undoLast());
+      await refreshAll();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }, [refreshAll]);
+  const redoOp = useCallback(async () => {
+    setBusy("Redoing…");
+    setError(null);
+    try {
+      setNotice(await api.redoLast());
+      await refreshAll();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }, [refreshAll]);
+  keyOps.current = { undo: undoOp, redo: redoOp };
+
+  // Stage/unstage/discard one hunk of the selected working-diff file.
+  const hunkAction = useCallback(
+    (action: "stage" | "unstage" | "discard", hunk: number) => {
+      const sel = selFileRef.current;
+      if (!sel?.path) return;
+      const apply = () =>
+        run(`${action === "stage" ? "Staging" : action === "unstage" ? "Unstaging" : "Discarding"} hunk…`, async () => {
+          if (action === "stage") await api.stageHunk(sel.path, hunk);
+          else if (action === "unstage") await api.unstageHunk(sel.path, hunk);
+          else await api.discardHunk(sel.path, hunk);
+          setWorkDiff(await api.getWorkingDiff(sel.path, sel.staged ?? false).catch(() => null));
+        });
+      if (action === "discard") {
+        setDialog({
+          kind: "confirm",
+          title: "Discard hunk",
+          message: <>Discard this hunk in <b>{sel.path}</b>? This cannot be undone.</>,
+          confirmLabel: "Discard",
+          danger: true,
+          onConfirm: apply,
+        });
+      } else {
+        void apply();
+      }
+    },
+    [run],
+  );
 
   const headOid = repo?.head
     ? commits.find((c) => c.refs.some((r) => r.kind === "branch" && r.name === repo.head))?.oid ?? null
@@ -376,7 +541,7 @@ export default function App() {
 
   /* ---------- context menus ---------- */
 
-  const fileMenu = (e: React.MouseEvent, f: FileChange) => {
+  const fileMenu = useCallback((e: React.MouseEvent, f: FileChange) => {
     e.preventDefault();
     const items: MenuItem[] = [
       f.staged !== null
@@ -396,6 +561,7 @@ export default function App() {
           }),
       },
       { label: "", separator: true },
+      { label: "File history", onClick: () => setDialog({ kind: "fileHistory", path: f.path }) },
       { label: "View blame", onClick: () => {
           api.getBlame(f.path).then((hunks) => setBlame({ path: f.path, hunks })).catch((err) => setError(String(err)));
           setSelFile({ path: f.path, staged: f.staged !== null });
@@ -404,9 +570,9 @@ export default function App() {
       { label: "Copy path", onClick: () => navigator.clipboard.writeText(f.path) },
     ];
     setMenu({ x: e.clientX, y: e.clientY, items });
-  };
+  }, [run]);
 
-  const stashMenu = (e: React.MouseEvent, s: StashInfo) => {
+  const stashMenu = useCallback((e: React.MouseEvent, s: StashInfo) => {
     e.preventDefault();
     setMenu({
       x: e.clientX,
@@ -432,7 +598,7 @@ export default function App() {
         { label: "Manage all stashes…", onClick: () => setDialog({ kind: "stash" }) },
       ],
     });
-  };
+  }, [run]);
 
   /** Check the update endpoint; quiet unless `manual`. */
   const checkUpdates = useCallback(async (manual: boolean) => {
@@ -479,7 +645,7 @@ export default function App() {
     }
   }, []);
 
-  const commitMenu = (e: React.MouseEvent, c: CommitInfo) => {
+  const commitMenu = useCallback((e: React.MouseEvent, c: CommitInfo) => {
     e.preventDefault();
     const resetItem = (mode: "soft" | "mixed" | "hard"): MenuItem => ({
       label: `Reset to this commit (${mode})${mode === "hard" ? "…" : ""}`,
@@ -506,17 +672,17 @@ export default function App() {
         { label: "Cherry-pick", onClick: () => run("Cherry-picking…", () => api.cherryPick(c.oid)) },
         { label: "Revert commit", onClick: () => run("Reverting…", () => api.revertCommit(c.oid)) },
         { label: "Checkout commit (detached HEAD)", onClick: () =>
-            setDialog({ kind: "confirm", title: "Checkout commit", message: <>Check out <code>{c.short_id}</code> as detached HEAD?</>, confirmLabel: "Checkout", onConfirm: () => run("Checking out…", () => api.checkoutCommit(c.oid)) }) },
+            setDialog({ kind: "confirm", title: "Checkout commit", message: <>Check out <code>{c.short_id}</code> as detached HEAD?</>, confirmLabel: "Checkout", onConfirm: () => dirtyRun("Checking out…", { target: c.short_id, op: "switch" }, (m) => api.checkoutCommit(c.oid, m)) }) },
         { label: "", separator: true },
         resetItem("soft"), resetItem("mixed"), resetItem("hard"),
         { label: "", separator: true },
         { label: "Copy SHA", onClick: () => navigator.clipboard.writeText(c.oid) },
       ],
     });
-  };
+  }, [run, dirtyRun, repo]);
 
   /** Dragging a commit onto another commit: cherry-pick / reorder / squash. */
-  const commitDrop = (oid: string, target: string, x: number, y: number) => {
+  const commitDrop = useCallback((oid: string, target: string, x: number, y: number) => {
     const c = commits.find((v) => v.oid === oid);
     const t = commits.find((v) => v.oid === target);
     if (!c || !t) return;
@@ -542,18 +708,18 @@ export default function App() {
         { label: `Squash ${c.short_id} into ${t.short_id}…`, onClick: () => rewrite("squash_into", `Squash commit ${c.short_id}`) },
       ],
     });
-  };
+  }, [commits, repo, run]);
 
-  const branchMenu = (e: React.MouseEvent, b: BranchInfo) => {
+  const branchMenu = useCallback((e: React.MouseEvent, b: BranchInfo) => {
     e.preventDefault();
     const items: MenuItem[] = [];
     if (!b.is_head && !b.is_remote) items.push({ label: `Checkout ${b.name}`, onClick: () => checkout(b.name) });
     items.push({
       label: `Merge ${b.name} into ${repo?.head}`,
-      onClick: () => run(`Merging ${b.name}…`, () => api.mergeBranch(b.name)),
+      onClick: () => dirtyRun(`Merging ${b.name}…`, { target: b.name, op: "merge" }, (m) => api.mergeBranch(b.name, m)),
     });
     if (!b.is_remote) {
-      items.push({ label: `Rebase ${repo?.head} onto ${b.name}`, onClick: () => run("Rebasing…", () => api.rebaseBranch(b.name)) });
+      items.push({ label: `Rebase ${repo?.head} onto ${b.name}`, onClick: () => dirtyRun(`Rebasing onto ${b.name}…`, { target: b.name, op: "rebase" }, (m) => api.rebaseBranch(b.name, m)) });
       items.push({ label: `Rename ${b.name}…`, onClick: () => setDialog({ kind: "rename", branch: b.name }) });
       items.push({
         label: `Delete ${b.name}…`, danger: true, disabled: b.is_head,
@@ -579,7 +745,7 @@ export default function App() {
       });
     }
     setMenu({ x: e.clientX, y: e.clientY, items });
-  };
+  }, [checkout, dirtyRun, run, repo]);
 
   const commands: Command[] = useMemo(() => {
     const list: Command[] = [];
@@ -596,7 +762,10 @@ export default function App() {
       add("Remote", "Fetch all remotes", () => run("Fetching all…", () => api.fetchAll()), "sync");
       add("Remote", "Pull", pullOp, "arrowDown");
       add("Remote", "Push", pushOp, "arrowUp");
+      add("Edit", "Undo", undoOp, "refresh", `${modKey}Z`);
+      add("Edit", "Redo", redoOp, "refresh", `${modKey}⇧Z`);
       add("Branch", "New branch…", () => setDialog({ kind: "newBranch" }), "plus");
+      add("Branch", "Compare branches…", () => setDialog({ kind: "compare" }), "diff");
       add("Branch", `Merge into ${repo.head ?? "HEAD"}…`, () => setDialog({ kind: "merge" }), "merge");
       add("Branch", "Rebase current branch…", () => setDialog({ kind: "rebase" }), "merge");
       add("Branch", "Stashes…", () => setDialog({ kind: "stash" }), "stash");
@@ -647,13 +816,13 @@ export default function App() {
         onNewBranch={() => setDialog({ kind: "newBranch" })}
         onMerge={() => setDialog({ kind: "merge" })}
         onRebase={() => setDialog({ kind: "rebase" })}
-        onStashMenu={() => setDialog({ kind: "stash" })}
+        onStashMenu={openStashDialog}
         onTags={() => setDialog({ kind: "tags" })}
         onRemotes={() => setDialog({ kind: "remotes" })}
         onSettings={() => setDialog({ kind: "settings" })}
         onCredentials={() => setDialog({ kind: "credentials" })}
         onSshKeys={() => setDialog({ kind: "sshkey" })}
-        onAiKeys={() => setDialog({ kind: "settings", aiOnly: true })}
+        onAiKeys={openAiSettings}
         onAbout={() => setDialog({ kind: "about" })}
         onCheckUpdates={() => checkUpdates(true)}
         onPullRequests={() => setDialog({ kind: "prs" })}
@@ -731,21 +900,12 @@ export default function App() {
                 selected={selFile}
                 onSelect={selectFile}
                 onToggleStage={toggleStage}
+                onToggleMany={toggleMany}
                 onToggleAll={toggleAll}
                 onCommit={commit}
-                onDiscard={(paths) => run("Discarding…", () => api.discardChanges(paths))}
-                onDiscardAll={() =>
-                  setDialog({
-                    kind: "confirm",
-                    title: "Discard all changes",
-                    message: <>Discard all changes in <b>{normalCount(changes)}</b> file(s)? This cannot be undone.</>,
-                    confirmLabel: "Discard all",
-                    danger: true,
-                    onConfirm: () =>
-                      run("Discarding…", () => api.discardChanges(changes.map((c) => c.path))),
-                  })
-                }
-                onStashAll={() => setDialog({ kind: "stash" })}
+                onDiscard={discardMany}
+                onDiscardAll={discardAll}
+                onStashAll={openStashDialog}
                 onContextMenu={fileMenu}
                 stashes={stashes}
                 expandedStash={expandedStash}
@@ -754,8 +914,8 @@ export default function App() {
                 onToggleStash={toggleStash}
                 onSelectStashFile={selectStashFile}
                 onStashContext={stashMenu}
-                onGenerateMessage={() => api.generateCommitMessage()}
-                onAiSetup={() => setDialog({ kind: "settings", aiOnly: true })}
+                onGenerateMessage={generateMessage}
+                onAiSetup={openAiSettings}
                 onError={setError}
                 headName={headName}
                 repoState={repo.state}
@@ -770,7 +930,7 @@ export default function App() {
                 onSelect={selectCommit}
                 onContextMenu={commitMenu}
                 onCommitDrop={commitDrop}
-                onSearch={(q) => { setQuery(q); loadHistory(q, true); }}
+                onSearch={searchCommits}
                 onLoadMore={loadMore}
                 hasMore={hasMore}
               />
@@ -807,7 +967,7 @@ export default function App() {
                   <DiffView diff={stashDiff} staged={false} />
                 </div>
               ) : (
-                <DiffView diff={workDiff} staged={selFile?.staged ?? false} />
+                <DiffView diff={workDiff} staged={selFile?.staged ?? false} onHunkAction={hunkAction} />
               )
             ) : (
               <CommitDetailView detail={detail} onError={setError} />
@@ -825,7 +985,7 @@ export default function App() {
         )}
         <span className="ellipsis faint">{repo ? repo.path : "No repository open"}</span>
         <span className="grow" />
-        {busy && <span className="status-item">{busy}</span>}
+        {busy && <span className="status-item sb-busy">{busy}</span>}
         <button className="status-item status-btn" onClick={() => setPalette(true)}>
           <kbd>{modKey}</kbd><kbd>K</kbd> Commands
         </button>
@@ -844,7 +1004,7 @@ export default function App() {
           onClose={() => setDialog(null)}
           onError={setError}
           onCreate={async (name, base, co) => {
-            await run("Creating branch…", () => api.createBranch(name, base || undefined, co));
+            await dirtyRun(`Creating ${name}…`, { target: name, op: "switch" }, (m) => api.createBranch(name, base || undefined, co, m));
           }}
         />
       )}
@@ -856,7 +1016,7 @@ export default function App() {
           exclude={repo?.is_detached ? undefined : repo?.head ?? undefined}
           onClose={() => setDialog(null)}
           onError={setError}
-          onPick={async (name) => run(`Merging ${name}…`, () => api.mergeBranch(name))}
+          onPick={async (name) => dirtyRun(`Merging ${name}…`, { target: name, op: "merge" }, (m) => api.mergeBranch(name, m))}
         />
       )}
       {dialog?.kind === "rebase" && (
@@ -867,7 +1027,7 @@ export default function App() {
           exclude={repo?.is_detached ? undefined : repo?.head ?? undefined}
           onClose={() => setDialog(null)}
           onError={setError}
-          onPick={async (name) => run("Rebasing…", () => api.rebaseBranch(name))}
+          onPick={async (name) => dirtyRun(`Rebasing onto ${name}…`, { target: name, op: "rebase" }, (m) => api.rebaseBranch(name, m))}
         />
       )}
       {dialog?.kind === "rename" && (
@@ -885,7 +1045,7 @@ export default function App() {
         <PullRequestsDialog
           onClose={() => setDialog(null)}
           onError={setError}
-          onCheckout={(b) => run(`Checking out ${b}…`, () => api.checkoutBranch(b))}
+          onCheckout={checkout}
           onSignIn={() => setDialog({ kind: "credentials" })}
         />
       )}
@@ -921,6 +1081,31 @@ export default function App() {
         />
       )}
       {dialog?.kind === "about" && <AboutDialog onClose={() => setDialog(null)} onError={setError} />}
+      {dialog?.kind === "fileHistory" && (
+        <FileHistoryDialog path={dialog.path} onClose={() => setDialog(null)} onError={setError} />
+      )}
+      {dialog?.kind === "compare" && (
+        <CompareDialog
+          branches={branches}
+          head={repo?.is_detached ? "" : repo?.head ?? ""}
+          onClose={() => setDialog(null)}
+          onError={setError}
+        />
+      )}
+      {dialog?.kind === "dirtyCheckout" && (
+        <DirtyCheckoutDialog
+          target={dialog.target}
+          op={dialog.op}
+          current={repo?.is_detached ? "detached HEAD" : repo?.head ?? "HEAD"}
+          count={dialog.count}
+          onClose={() => setDialog(null)}
+          onPick={(mode) => {
+            const retry = dialog.retry;
+            setDialog(null);
+            retry(mode);
+          }}
+        />
+      )}
       {dialog?.kind === "confirm" && (
         <ConfirmDialog
           title={dialog.title}

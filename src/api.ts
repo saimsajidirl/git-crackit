@@ -4,6 +4,7 @@ import type {
   RemoteInfo, StashInfo, StashFileInfo, TagInfo, MergeResult, BlameHunkInfo, SubmoduleInfo,
   GitConfigInfo, RecentRepos, CredentialStatus,
   GhRepo, GhUser, GhPR, GhIssue, GhCheckStatus, DeviceFlow, DevicePoll, ImageDiff, AiSettingsInfo,
+  CheckoutOutcome, CompareResult,
 } from "./types";
 
 export const api = {
@@ -34,6 +35,9 @@ export const api = {
   stageAll: () => invoke<void>("stage_all"),
   unstageAll: () => invoke<void>("unstage_all"),
   discardChanges: (paths: string[]) => invoke<void>("discard_changes", { paths }),
+  stageHunk: (path: string, hunk: number) => invoke<void>("stage_hunk", { path, hunk }),
+  unstageHunk: (path: string, hunk: number) => invoke<void>("unstage_hunk", { path, hunk }),
+  discardHunk: (path: string, hunk: number) => invoke<void>("discard_hunk", { path, hunk }),
   createCommit: (message: string, amend?: boolean) =>
     invoke<string>("create_commit", { message, amend }),
   getWorkingDiff: (path: string, staged: boolean) =>
@@ -47,6 +51,8 @@ export const api = {
   getGitIdentity: () => invoke<GitConfigInfo>("get_git_identity"),
   setGitIdentity: (name: string, email: string, global: boolean) =>
     invoke<void>("set_git_identity", { name, email, global }),
+  setSigningConfig: (gpgsign: boolean, signingkey: string | null, format: string, global: boolean) =>
+    invoke<void>("set_signing_config", { gpgsign, signingkey, format, global }),
 
   getHistory: (skip?: number, limit?: number, query?: string, refname?: string) =>
     invoke<CommitInfo[]>("get_history", { skip, limit, query, refname }),
@@ -57,18 +63,29 @@ export const api = {
   revertCommit: (oid: string) => invoke<MergeResult>("revert_commit", { oid }),
   resetToCommit: (oid: string, mode: "soft" | "mixed" | "hard") =>
     invoke<void>("reset_to_commit", { oid, mode }),
-  checkoutCommit: (oid: string) => invoke<void>("checkout_commit", { oid }),
+  checkoutCommit: (oid: string, dirty?: "carry" | "stash") =>
+    invoke<CheckoutOutcome>("checkout_commit", { oid, dirty }),
+  undoLast: () => invoke<string>("undo_last"),
+  redoLast: () => invoke<string>("redo_last"),
+  fileHistory: (path: string) => invoke<CommitInfo[]>("file_history", { path }),
+  compareRefs: (base: string, compare: string) =>
+    invoke<CompareResult>("compare_refs", { base, compare }),
+  compareFileDiff: (base: string, compare: string, path: string) =>
+    invoke<FileDiff>("compare_file_diff", { base, compare, path }),
 
   listBranches: () => invoke<BranchInfo[]>("list_branches"),
-  createBranch: (name: string, startPoint?: string, checkout?: boolean) =>
-    invoke<void>("create_branch", { name, startPoint, checkout }),
-  checkoutBranch: (name: string) => invoke<void>("checkout_branch", { name }),
+  createBranch: (name: string, startPoint?: string, checkout?: boolean, dirty?: "carry" | "stash") =>
+    invoke<CheckoutOutcome>("create_branch", { name, startPoint, checkout, dirty }),
+  checkoutBranch: (name: string, dirty?: "carry" | "stash") =>
+    invoke<CheckoutOutcome>("checkout_branch", { name, dirty }),
   deleteBranch: (name: string) => invoke<void>("delete_branch", { name }),
   renameBranch: (old: string, newName: string) =>
     invoke<void>("rename_branch", { old, new: newName }),
-  mergeBranch: (name: string) => invoke<MergeResult>("merge_branch", { name }),
+  mergeBranch: (name: string, dirty?: "carry" | "stash") =>
+    invoke<CheckoutOutcome>("merge_branch", { name, dirty }),
   abortMerge: () => invoke<void>("abort_merge"),
-  rebaseBranch: (onto: string) => invoke<MergeResult>("rebase_branch", { onto }),
+  rebaseBranch: (onto: string, dirty?: "carry" | "stash") =>
+    invoke<CheckoutOutcome>("rebase_branch", { onto, dirty }),
   rebaseCommitAction: (oid: string, target: string, action: "move_after" | "squash_into") =>
     invoke<MergeResult>("rebase_commit_action", { oid, target, action }),
 
@@ -80,8 +97,9 @@ export const api = {
   setRemoteUrl: (name: string, url: string) => invoke<void>("set_remote_url", { name, url }),
   fetchRemote: (remote?: string) => invoke<void>("fetch_remote", { remote }),
   fetchAll: () => invoke<void>("fetch_all"),
-  pull: () => invoke<MergeResult>("pull"),
-  push: (setUpstream?: boolean) => invoke<void>("push", { setUpstream }),
+  pull: (dirty?: "carry" | "stash") => invoke<CheckoutOutcome>("pull", { dirty }),
+  push: (setUpstream?: boolean, force?: boolean) =>
+    invoke<void>("push", { setUpstream, force }),
   pushTag: (name: string, remote?: string) => invoke<void>("push_tag", { name, remote }),
   setBranchUpstream: (branch: string, upstream: string) =>
     invoke<void>("set_branch_upstream", { branch, upstream }),

@@ -150,7 +150,7 @@ const CommitRow = memo(function CommitRow({
   );
 });
 
-export function HistoryPanel({
+export const HistoryPanel = memo(function HistoryPanel({
   commits,
   selectedOid,
   headOid,
@@ -248,4 +248,4 @@ export function HistoryPanel({
       </div>
     </div>
   );
-}
+});

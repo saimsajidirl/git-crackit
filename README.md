@@ -35,7 +35,16 @@ each [GitHub Release](https://github.com/saimsajidirl/git-crackit/releases):
   refresh the UI automatically
 
 ### Working tree
-- Stage / unstage / discard per file, per hunk view, or in bulk
+- Stage / unstage / discard per file, **per hunk** (diff-view hunk buttons),
+  or in bulk — **multi-select** (Ctrl/⌘-click + shift-click ranges) with a
+  bulk action bar
+- **Undo / redo** (Ctrl/⌘+Z, Ctrl/⌘+⇧+Z) — reflog-style HEAD snapshots
+  restore the previous ref + worktree state after commits, checkouts, merges,
+  rebases, resets, and cherry-picks
+- **Commit signing** — honors `commit.gpgsign`; GPG and SSH (`gpg.format=ssh`)
+  signatures via Settings → Git settings; signed commits get a badge
+- **Dirty-worktree prompts** — switching/merging/pulling/rebasing with
+  uncommitted changes asks to carry them along or keep them stashed
 - Merge-conflict resolution flow: pick sides, stage, commit — or Abort to
   restore the pre-merge state
 - Amend last commit, `.gitignore` editing, per-file **blame** view
@@ -54,6 +63,10 @@ each [GitHub Release](https://github.com/saimsajidirl/git-crackit/releases):
   squash — powered by `git rebase -i --rebase-merges`, so merge topology in
   the rewritten range is preserved
 - Cherry-pick, revert, checkout-detached, reset (soft / mixed / hard)
+- **File history** — right-click a file → "File history" follows renames
+  (`log --follow` semantics) and shows each commit's diff inline
+- **Branch compare** — palette → "Compare branches…" diffs any two refs
+  (three-dot / merge-base) with ahead/behind counts and per-file diffs
 
 ### Branches & remotes
 - Branch create / checkout / rename / delete, merge, rebase
@@ -65,6 +78,9 @@ each [GitHub Release](https://github.com/saimsajidirl/git-crackit/releases):
   passphrase-protected key into `ssh-agent` without a terminal; SSH auth
   failures auto-open it and retry the failed operation
 - Submodule listing and update
+- **Force-push with lease** — when a push is rejected non-fast-forward, the
+  dialog offers a force-push that aborts if the remote moved since your last
+  fetch
 
 ### GitHub integration
 - Sign in via **OAuth device flow** or paste a PAT; the token lives in your
@@ -105,6 +121,8 @@ each [GitHub Release](https://github.com/saimsajidirl/git-crackit/releases):
 | Shortcut | Action |
 |---|---|
 | Ctrl/⌘+K | Command palette |
+| Ctrl/⌘+Z | Undo last operation |
+| Ctrl/⌘+⇧+Z | Redo |
 | Ctrl/⌘+Enter | Commit (from summary field: Enter also commits) |
 | Ctrl/⌘+= / − / 0 | Zoom in / out / reset |
 | Esc | Close dialog / menu |

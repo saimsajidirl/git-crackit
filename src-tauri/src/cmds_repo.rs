@@ -98,6 +98,7 @@ pub fn open_repository<R: Runtime>(app: AppHandle<R>, state: State<AppState>, pa
         .unwrap_or_else(|| p.clone());
     let info = repo_info(&repo, &root)?;
     *state.repo_path.lock().map_err(|e| e.to_string())? = Some(root.clone());
+    clear_undo(&state);
     crate::watcher::start(&app, &state, &root);
     state::add_recent(&info.path);
     Ok(info)
@@ -115,6 +116,7 @@ pub fn init_repository<R: Runtime>(app: AppHandle<R>, state: State<AppState>, pa
     .map_err(|e| e.message().to_string())?;
     let info = repo_info(&repo, &p)?;
     *state.repo_path.lock().map_err(|e| e.to_string())? = Some(p.clone());
+    clear_undo(&state);
     crate::watcher::start(&app, &state, &p);
     state::add_recent(&info.path);
     Ok(info)
@@ -164,6 +166,7 @@ pub fn clone_repository<R: Runtime>(
 
     let info = repo_info(&repo, &dest_path)?;
     *state.repo_path.lock().map_err(|e| e.to_string())? = Some(dest_path.clone());
+    clear_undo(&state);
     crate::watcher::start(&app, &state, &dest_path);
     state::add_recent(&info.path);
     Ok(info)
@@ -172,6 +175,7 @@ pub fn clone_repository<R: Runtime>(
 #[tauri::command]
 pub fn close_repository(state: State<AppState>) -> Result<(), String> {
     *state.repo_path.lock().map_err(|e| e.to_string())? = None;
+    clear_undo(&state);
     crate::watcher::stop(&state);
     state::set_last(None);
     Ok(())

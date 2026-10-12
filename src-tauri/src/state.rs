@@ -9,10 +9,22 @@ pub struct Credentials {
     pub password: Option<String>,
 }
 
+/// A HEAD snapshot taken before a mutating op — the unit of undo/redo.
+pub struct UndoPoint {
+    pub label: String,
+    /// e.g. "refs/heads/main"; None = detached HEAD.
+    pub refname: Option<String>,
+    pub oid: git2::Oid,
+    /// Ref-only restore (commit/amend undo keeps the changes staged).
+    pub soft: bool,
+}
+
 pub struct AppState {
     pub repo_path: Mutex<Option<PathBuf>>,
     pub creds: Mutex<Credentials>,
     pub watcher: Mutex<Option<RecommendedWatcher>>,
+    pub undo_stack: Mutex<Vec<UndoPoint>>,
+    pub redo_stack: Mutex<Vec<UndoPoint>>,
 }
 
 impl Default for AppState {
@@ -21,6 +33,8 @@ impl Default for AppState {
             repo_path: Mutex::new(None),
             creds: Mutex::new(load_credentials()),
             watcher: Mutex::new(None),
+            undo_stack: Mutex::new(Vec::new()),
+            redo_stack: Mutex::new(Vec::new()),
         }
     }
 }

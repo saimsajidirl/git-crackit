@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { memo, useEffect, useMemo, useState } from "react";
 import type { FileDiff, ImageDiff } from "../types";
 import { Icon } from "../icons";
 import { useVirtual } from "../useVirtual";
@@ -54,6 +54,7 @@ interface Row {
   old: number | null;
   new: number | null;
   text: string;
+  hunk?: number;
 }
 
 export function DiffEmpty({ icon, title, sub }: { icon: string; title: string; sub?: string }) {
@@ -66,12 +67,20 @@ export function DiffEmpty({ icon, title, sub }: { icon: string; title: string; s
   );
 }
 
-export function DiffView({ diff, staged = false }: { diff: FileDiff | null; staged?: boolean }) {
+export const DiffView = memo(function DiffView({
+  diff,
+  staged = false,
+  onHunkAction,
+}: {
+  diff: FileDiff | null;
+  staged?: boolean;
+  onHunkAction?: (action: "stage" | "unstage" | "discard", hunk: number) => void;
+}) {
   const { rows, maxCols } = useMemo(() => {
     const rows: Row[] = [];
     let maxCols = 0;
-    for (const h of diff?.hunks ?? []) {
-      rows.push({ kind: "hunk", old: null, new: null, text: h.header.replace(/\n$/, "") });
+    for (const [hi, h] of (diff?.hunks ?? []).entries()) {
+      rows.push({ kind: "hunk", old: null, new: null, text: h.header.replace(/\n$/, ""), hunk: hi });
       for (const l of h.lines) {
         const text = l.content.replace(/\n$/, "");
         rows.push({ kind: l.kind, old: l.old_lineno, new: l.new_lineno, text });
@@ -118,6 +127,24 @@ export function DiffView({ diff, staged = false }: { diff: FileDiff | null; stag
                 <span className="dl-sign">{r.kind === "add" ? "+" : r.kind === "del" ? "−" : ""}</span>
               )}
               <span className="dl-text">{r.text}</span>
+              {r.kind === "hunk" && onHunkAction && r.hunk !== undefined && (
+                <span className="hunk-actions">
+                  {staged ? (
+                    <button className="hunk-btn" onClick={() => onHunkAction("unstage", r.hunk!)}>
+                      Unstage hunk
+                    </button>
+                  ) : (
+                    <>
+                      <button className="hunk-btn" onClick={() => onHunkAction("stage", r.hunk!)}>
+                        Stage hunk
+                      </button>
+                      <button className="hunk-btn danger" onClick={() => onHunkAction("discard", r.hunk!)}>
+                        Discard
+                      </button>
+                    </>
+                  )}
+                </span>
+              )}
             </div>
           ))}
           {padBottom > 0 && <div style={{ height: padBottom }} />}
@@ -125,4 +152,4 @@ export function DiffView({ diff, staged = false }: { diff: FileDiff | null; stag
       </div>
     </div>
   );
-}
+});

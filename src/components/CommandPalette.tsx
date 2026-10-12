@@ -27,7 +27,7 @@ export function CommandPalette({ commands, onClose }: { commands: Command[]; onC
 
   useEffect(() => setActive(0), [q]);
   useEffect(() => {
-    listRef.current?.querySelector<HTMLElement>(`[data-idx="${active}"]`)?.scrollIntoView({ block: "nearest" });
+    listRef.current?.querySelector<HTMLElement>(`[data-idx="${active}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [active]);
 
   const exec = (c: Command | undefined) => {

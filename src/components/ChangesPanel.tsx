@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { FileChange, StashFileInfo, StashInfo } from "../types";
 import { Icon } from "../icons";
 import { Dropdown } from "./ContextMenu";
@@ -9,11 +9,12 @@ export interface FileSelection {
   staged: boolean;
 }
 
-export function ChangesPanel({
+export const ChangesPanel = memo(function ChangesPanel({
   changes,
   selected,
   onSelect,
   onToggleStage,
+  onToggleMany,
   onToggleAll,
   onCommit,
   onDiscard,
@@ -39,6 +40,7 @@ export function ChangesPanel({
   selected: FileSelection | null;
   onSelect: (sel: FileSelection) => void;
   onToggleStage: (f: FileChange, stage: boolean) => void;
+  onToggleMany: (paths: string[], stage: boolean) => void;
   onToggleAll: (stage: boolean) => void;
   onCommit: (summary: string, description: string, amend: boolean) => void;
   onDiscard: (paths: string[]) => void;
@@ -93,6 +95,39 @@ export function ChangesPanel({
 
   const conflicts = changes.filter((c) => c.conflicted);
   const normal = changes.filter((c) => !c.conflicted);
+  const list = useMemo(() => [...conflicts, ...normal], [changes]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Multi-select: ctrl/⌘ toggles, shift selects the range from the anchor.
+  const [multiSel, setMultiSel] = useState<Set<string>>(new Set());
+  const anchorRef = useRef<number | null>(null);
+  useEffect(() => {
+    setMultiSel((prev) => {
+      const paths = new Set(changes.map((c) => c.path));
+      const next = new Set([...prev].filter((p) => paths.has(p)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [changes]);
+
+  const rowClick = (e: React.MouseEvent, f: FileChange, checked: boolean) => {
+    const idx = list.indexOf(f);
+    if (e.shiftKey && anchorRef.current != null) {
+      e.preventDefault();
+      const [a, b] = [Math.min(anchorRef.current, idx), Math.max(anchorRef.current, idx)];
+      setMultiSel(new Set(list.slice(a, b + 1).map((x) => x.path)));
+    } else if (e.ctrlKey || e.metaKey) {
+      setMultiSel((prev) => {
+        const next = new Set(prev);
+        if (next.has(f.path)) next.delete(f.path);
+        else next.add(f.path);
+        return next;
+      });
+      anchorRef.current = idx;
+    } else {
+      if (multiSel.size > 0) setMultiSel(new Set());
+      anchorRef.current = idx;
+    }
+    onSelect({ path: f.path, staged: checked });
+  };
   const stagedCount = normal.filter((c) => c.staged !== null).length;
   const allChecked = normal.length > 0 && stagedCount === normal.length;
   const canCommit = stagedCount > 0 && summary.trim().length > 0 && !busy;
@@ -120,8 +155,8 @@ export function ChangesPanel({
     return (
       <div
         key={f.path + (checked ? ":s" : ":u")}
-        className={cx("file-row", isSel && "selected", f.conflicted && "conflicted")}
-        onClick={() => onSelect({ path: f.path, staged: checked })}
+        className={cx("file-row", isSel && "selected", f.conflicted && "conflicted", multiSel.has(f.path) && "multi")}
+        onClick={(e) => rowClick(e, f, checked)}
         onContextMenu={(e) => onContextMenu(e, f)}
       >
         <input
@@ -181,6 +216,24 @@ export function ChangesPanel({
           </Dropdown>
         </div>
       </div>
+
+      {multiSel.size > 1 && (
+        <div className="multi-bar">
+          <span className="small">{multiSel.size} selected</span>
+          <button className="btn small" onClick={() => { onToggleMany([...multiSel], true); setMultiSel(new Set()); }}>
+            Stage
+          </button>
+          <button className="btn small" onClick={() => { onToggleMany([...multiSel], false); setMultiSel(new Set()); }}>
+            Unstage
+          </button>
+          <button className="btn small danger" onClick={() => { onDiscard([...multiSel]); setMultiSel(new Set()); }}>
+            Discard…
+          </button>
+          <button className="icon-btn" title="Clear selection" onClick={() => setMultiSel(new Set())}>
+            <Icon name="x" size={12} />
+          </button>
+        </div>
+      )}
 
       <div className="file-list">
         {conflicts.map(renderRow)}
@@ -295,4 +348,4 @@ export function ChangesPanel({
       </div>
     </div>
   );
-}
+});

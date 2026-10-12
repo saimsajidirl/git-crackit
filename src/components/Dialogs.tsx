@@ -4,8 +4,9 @@ import { Avatar } from "./Avatar";
 import { Icon } from "../icons";
 import { api } from "../api";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { BranchInfo, RemoteInfo, StashInfo, TagInfo, OpProgress, SubmoduleInfo, GhRepo, GhPR, GhIssue, GhCheckStatus, DeviceFlow } from "../types";
-import { timeAgo } from "../util";
+import type { BranchInfo, RemoteInfo, StashInfo, TagInfo, OpProgress, SubmoduleInfo, GhRepo, GhPR, GhIssue, GhCheckStatus, DeviceFlow, CommitInfo, FileDiff, CompareResult } from "../types";
+import { timeAgo, fileName, dirName, statusLetter, cx } from "../util";
+import { DiffView } from "./DiffView";
 import { listen } from "@tauri-apps/api/event";
 
 /* ---------------- Clone ---------------- */
@@ -126,6 +127,59 @@ export function ConfirmDialog({
         <button className={`btn ${danger ? "danger" : "primary"}`} onClick={() => { onConfirm(); onClose(); }}>
           {confirmLabel}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------------- Dirty-worktree choice (switch/merge/pull/rebase) ---------------- */
+export function DirtyCheckoutDialog({
+  target, current, count, op = "switch", onClose, onPick,
+}: {
+  target: string; current: string; count: number; op?: "switch" | "merge" | "pull" | "rebase";
+  onClose: () => void; onPick: (mode: "carry" | "stash") => void;
+}) {
+  const copy = {
+    switch: {
+      title: `Switch to "${target}"`,
+      intro: <>You have <b>{count}</b> uncommitted change{count === 1 ? "" : "s"} on <b>{current}</b>. What should happen to them?</>,
+      carry: [`Take changes to ${target}`, "Your edits move with you to the new branch"],
+      stash: [`Keep changes on ${current}`, `Stashed on ${current} — switch back and pop the stash to continue`],
+    },
+    merge: {
+      title: `Merge "${target}"`,
+      intro: <>You have <b>{count}</b> uncommitted change{count === 1 ? "" : "s"} that this merge would touch.</>,
+      carry: ["Stash, merge, then re-apply", "Your edits are re-applied on top of the merge (may conflict)"],
+      stash: ["Keep changes in a stash", `Stashed on ${current} — pop it after the merge`],
+    },
+    pull: {
+      title: `Pull "${target}"`,
+      intro: <>You have <b>{count}</b> uncommitted change{count === 1 ? "" : "s"} that this pull would touch.</>,
+      carry: ["Stash, pull, then re-apply", "Your edits are re-applied on top of the pull (may conflict)"],
+      stash: ["Keep changes in a stash", `Stashed on ${current} — pop it after the pull`],
+    },
+    rebase: {
+      title: `Rebase onto "${target}"`,
+      intro: <>Rebase requires a clean working tree — you have <b>{count}</b> uncommitted change{count === 1 ? "" : "s"}.</>,
+      carry: ["Stash, rebase, then re-apply", "Your edits are re-applied on top of the rebase (may conflict)"],
+      stash: ["Keep changes in a stash", `Stashed on ${current} — pop it after the rebase`],
+    },
+  }[op];
+  return (
+    <Modal title={copy.title} onClose={onClose}>
+      <p className="confirm-msg">{copy.intro}</p>
+      <div className="choice-list">
+        <button className="btn choice-btn" onClick={() => onPick("carry")}>
+          <span>{copy.carry[0]}</span>
+          <span className="choice-sub">{copy.carry[1]}</span>
+        </button>
+        <button className="btn choice-btn" onClick={() => onPick("stash")}>
+          <span>{copy.stash[0]}</span>
+          <span className="choice-sub">{copy.stash[1]}</span>
+        </button>
+      </div>
+      <div className="modal-actions">
+        <button className="btn" onClick={onClose}>Cancel</button>
       </div>
     </Modal>
   );
@@ -362,6 +416,9 @@ export function SettingsDialog({ aiOnly, onClose, onError }: { aiOnly?: boolean;
   const [aiKey, setAiKey] = useState("");
   const [aiKeyed, setAiKeyed] = useState<string[]>([]);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [gpgsign, setGpgsign] = useState(false);
+  const [signingkey, setSigningkey] = useState("");
+  const [gpgformat, setGpgformat] = useState("openpgp");
   const KEY_PROVIDERS = ["anthropic", "openai", "groq", "custom"];
   const KEY_URLS: Record<string, string> = {
     anthropic: "https://console.anthropic.com/settings/keys",
@@ -374,6 +431,9 @@ export function SettingsDialog({ aiOnly, onClose, onError }: { aiOnly?: boolean;
     api.getGitIdentity().then((c) => {
       setName(c.name ?? "");
       setEmail(c.email ?? "");
+      setGpgsign(c.gpgsign);
+      setSigningkey(c.signingkey ?? "");
+      setGpgformat(c.gpgformat || "openpgp");
       setLoaded(true);
     }).catch((e) => onError(String(e)));
     api.getAiSettings().then((s) => {
@@ -400,6 +460,29 @@ export function SettingsDialog({ aiOnly, onClose, onError }: { aiOnly?: boolean;
             <input type="checkbox" className="cb" checked={global} onChange={(e) => setGlobal(e.target.checked)} />
             <span>Save globally (~/.gitconfig) instead of this repository</span>
           </label>
+          <div className="settings-title">Commit signing</div>
+          <label className="amend-row">
+            <input type="checkbox" className="switch" checked={gpgsign} onChange={(e) => setGpgsign(e.target.checked)} />
+            <span>Sign commits (commit.gpgsign)</span>
+          </label>
+          {gpgsign && (
+            <>
+              <Field label="Signing key (user.signingkey)">
+                <input
+                  className="input"
+                  value={signingkey}
+                  onChange={(e) => setSigningkey(e.target.value)}
+                  placeholder={gpgformat === "ssh" ? "~/.ssh/id_ed25519.pub" : "GPG key ID or fingerprint"}
+                />
+              </Field>
+              <Field label="Format (gpg.format)">
+                <select className="input" value={gpgformat} onChange={(e) => setGpgformat(e.target.value)}>
+                  <option value="openpgp">OpenPGP (gpg)</option>
+                  <option value="ssh">SSH (ssh-keygen)</option>
+                </select>
+              </Field>
+            </>
+          )}
           <hr className="settings-sep" />
         </>
       )}
@@ -449,7 +532,10 @@ export function SettingsDialog({ aiOnly, onClose, onError }: { aiOnly?: boolean;
         <button className="btn" onClick={onClose}>Cancel</button>
         <button className="btn primary" disabled={!loaded} onClick={async () => {
           try {
-            if (!aiOnly) await api.setGitIdentity(name.trim(), email.trim(), global);
+            if (!aiOnly) {
+              await api.setGitIdentity(name.trim(), email.trim(), global);
+              await api.setSigningConfig(gpgsign, signingkey.trim() || null, gpgformat, global);
+            }
             await api.setAiSettings(aiProvider, aiModel.trim(), aiBase.trim(), aiKey || null);
             onClose();
           } catch (e) { onError(String(e)); }
@@ -949,6 +1035,153 @@ export function AboutDialog({ onClose, onError }: { onClose: () => void; onError
         <span className="grow" />
         <button className="btn primary" onClick={onClose}>Close</button>
       </div>
+    </Modal>
+  );
+}
+
+/* ---------------- File history ---------------- */
+
+export function FileHistoryDialog({
+  path, onClose, onError,
+}: { path: string; onClose: () => void; onError: (m: string) => void }) {
+  const [commits, setCommits] = useState<CommitInfo[] | null>(null);
+  const [selOid, setSelOid] = useState<string | null>(null);
+  const [diff, setDiff] = useState<FileDiff | null>(null);
+
+  useEffect(() => {
+    setCommits(null);
+    setDiff(null);
+    setSelOid(null);
+    api.fileHistory(path).then(setCommits).catch((e) => { onError(String(e)); onClose(); });
+  }, [path]);
+
+  const open = (oid: string) => {
+    setSelOid(oid);
+    api.getCommitFileDiff(oid, path).then(setDiff).catch((e) => { setDiff(null); onError(String(e)); });
+  };
+
+  return (
+    <Modal title={`File history — ${path}`} onClose={onClose} width={840}>
+      {commits === null ? (
+        <p className="muted small">Loading…</p>
+      ) : commits.length === 0 ? (
+        <p className="muted small">No commits touch this file.</p>
+      ) : (
+        <div className="modal-list" style={{ maxHeight: "26vh" }}>
+          {commits.map((c) => (
+            <button
+              key={c.oid}
+              className={cx("list-row fh-row", selOid === c.oid && "selected")}
+              onClick={() => open(c.oid)}
+            >
+              <code className="fh-oid">{c.short_id}</code>
+              <span className="ellipsis grow">{c.summary}</span>
+              <span className="muted small">{c.author_name}</span>
+              <span className="muted small">{timeAgo(c.author_time)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {diff && (
+        <div className="modal-diff">
+          <DiffView diff={diff} />
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/* ---------------- Branch compare ---------------- */
+
+export function CompareDialog({
+  branches, head, onClose, onError,
+}: {
+  branches: BranchInfo[]; head: string;
+  onClose: () => void; onError: (m: string) => void;
+}) {
+  const [base, setBase] = useState(head);
+  const [compare, setCompare] = useState("");
+  const [result, setResult] = useState<CompareResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [selPath, setSelPath] = useState<string | null>(null);
+  const [diff, setDiff] = useState<FileDiff | null>(null);
+
+  const runCompare = async () => {
+    if (!base || !compare) return;
+    setBusy(true);
+    setDiff(null);
+    setSelPath(null);
+    try {
+      setResult(await api.compareRefs(base, compare));
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openFile = (p: string) => {
+    setSelPath(p);
+    api.compareFileDiff(base, compare, p).then(setDiff).catch((e) => { setDiff(null); onError(String(e)); });
+  };
+
+  const opts = (list: BranchInfo[]) => (
+    <>
+      <optgroup label="Local">
+        {list.filter((b) => !b.is_remote).map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+      </optgroup>
+      <optgroup label="Remote">
+        {list.filter((b) => b.is_remote).map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+      </optgroup>
+    </>
+  );
+
+  return (
+    <Modal title="Compare branches" onClose={onClose} width={840}>
+      <div className="compare-bar">
+        <select className="input" value={base} onChange={(e) => { setBase(e.target.value); setResult(null); }}>
+          {opts(branches)}
+        </select>
+        <span className="muted">…</span>
+        <select className="input" value={compare} onChange={(e) => { setCompare(e.target.value); setResult(null); }}>
+          <option value="">Compare against…</option>
+          {opts(branches)}
+        </select>
+        <button className="btn primary" disabled={!base || !compare || base === compare || busy} onClick={runCompare}>
+          {busy ? "Comparing…" : "Compare"}
+        </button>
+      </div>
+      {result && (
+        <>
+          <p className="muted small">
+            <code>{compare}</code> is {result.ahead} ahead, {result.behind} behind <code>{base}</code>
+            {result.files.length === 0 ? " — no file changes" : ""}
+          </p>
+          {result.files.length > 0 && (
+            <div className="modal-list" style={{ maxHeight: "26vh" }}>
+              {result.files.map((f) => (
+                <button
+                  key={f.path}
+                  className={cx("list-row fh-row", selPath === f.path && "selected")}
+                  onClick={() => openFile(f.path)}
+                >
+                  <span className={`status-badge st-${f.status}`}>{statusLetter(f.status)}</span>
+                  <span className="ellipsis grow" title={f.path}>
+                    {fileName(f.path)} <span className="muted small">{dirName(f.path)}</span>
+                  </span>
+                  <span className="stat-add small">+{f.additions}</span>
+                  <span className="stat-del small">−{f.deletions}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      {diff && (
+        <div className="modal-diff">
+          <DiffView diff={diff} />
+        </div>
+      )}
     </Modal>
   );
 }

@@ -152,8 +152,8 @@ pub fn fetch_all(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn pull(state: State<AppState>) -> Result<MergeResult, String> {
-    let repo = open_repo(&state)?;
+pub fn pull(state: State<AppState>, dirty: Option<String>) -> Result<CheckoutOutcome, String> {
+    let mut repo = open_repo(&state)?;
     let creds = get_creds(&state);
     let remote_name = upstream_remote(&repo)?;
     fetch_one(&repo, &remote_name, creds)?;
@@ -169,7 +169,7 @@ pub fn pull(state: State<AppState>) -> Result<MergeResult, String> {
                 .and_then(|b| b.upstream().ok())
                 .and_then(|u| u.get().name().map(|n| n.to_string()))
         });
-    let (annotated, branch_label) = match upstream_ref {
+    let (oid, branch_label) = match upstream_ref {
         Some(refname) => {
             let label = refname
                 .strip_prefix("refs/remotes/")
@@ -181,7 +181,7 @@ pub fn pull(state: State<AppState>) -> Result<MergeResult, String> {
             let annotated = repo
                 .find_annotated_commit(obj.id())
                 .map_err(|e| e.message().to_string())?;
-            (annotated, label)
+            (annotated.id(), label)
         }
         None => {
             let fetch_head = repo
@@ -190,18 +190,26 @@ pub fn pull(state: State<AppState>) -> Result<MergeResult, String> {
             let annotated = repo
                 .reference_to_annotated_commit(&fetch_head)
                 .map_err(|e| e.message().to_string())?;
-            (annotated, remote_name.clone())
+            (annotated.id(), remote_name.clone())
         }
     };
-    let res = merge_annotated(&repo, &annotated, &branch_label);
-    if res.is_ok() {
+    let mode = dirty.as_deref().unwrap_or("ask");
+    let undo = head_point(&repo, "Pull", false);
+    let out = merge_dirty_op(&mut repo, oid, &branch_label, mode)?;
+    if out.status != "dirty" {
         lfs_pull(&repo, &get_creds(&state));
+        if out.status != "up_to_date" {
+            record_undo(&state, undo);
+        }
     }
-    res
+    Ok(out)
 }
 
+/// `force` = --force-with-lease semantics: the remote ref is only overwritten
+/// when it still points where our remote-tracking ref says it does — i.e. no
+/// one else pushed since our last fetch.
 #[tauri::command]
-pub fn push(state: State<AppState>, set_upstream: Option<bool>) -> Result<(), String> {
+pub fn push(state: State<AppState>, set_upstream: Option<bool>, force: Option<bool>) -> Result<(), String> {
     let repo = open_repo(&state)?;
     let head = repo.head().map_err(|_| "Nothing to push (no commits yet)".to_string())?;
     if !head.is_branch() {
@@ -213,20 +221,61 @@ pub fn push(state: State<AppState>, set_upstream: Option<bool>) -> Result<(), St
         return Err(format!("Remote '{}' does not exist", remote_name));
     }
     let creds = get_creds(&state);
+    let force = force.unwrap_or(false);
     let refspec = format!("refs/heads/{0}:refs/heads/{0}", branch_name);
     if remote_is_ssh(&repo, &remote_name) {
-        git_net(repo_dir(&repo), &creds, &["push", &remote_name, &refspec])?;
+        let mut args = vec!["push"];
+        if force {
+            args.push("--force-with-lease");
+        }
+        args.push(&remote_name);
+        args.push(&refspec);
+        git_net(repo_dir(&repo), &creds, &args)?;
     } else {
+        if force {
+            // Lease check: remote tip must equal our remote-tracking ref —
+            // anything else means someone else pushed and a force would eat it.
+            let remote_tip = {
+                let mut r = repo.find_remote(&remote_name).map_err(|e| e.message().to_string())?;
+                let cb = remote_callbacks(creds.clone());
+                let conn = r
+                    .connect_auth(git2::Direction::Push, Some(cb), None)
+                    .map_err(|e| e.message().to_string())?;
+                conn.list()
+                    .map_err(|e| e.message().to_string())?
+                    .iter()
+                    .find(|e| e.name() == format!("refs/heads/{}", branch_name))
+                    .map(|e| e.oid())
+            };
+            let tracked = repo
+                .find_reference(&format!("refs/remotes/{}/{}", remote_name, branch_name))
+                .ok()
+                .and_then(|r| r.target());
+            if remote_tip.is_some() && remote_tip != tracked {
+                return Err(
+                    "Remote moved since your last fetch — fetch first, review, then force-push again."
+                        .into(),
+                );
+            }
+        }
+        let full_refspec = if force {
+            format!("+{}", refspec)
+        } else {
+            refspec.clone()
+        };
         let mut remote = repo.find_remote(&remote_name).map_err(|e| e.message().to_string())?;
         let cb = remote_callbacks(creds);
         let mut po = PushOptions::new();
         po.remote_callbacks(cb);
         remote
-            .push(&[refspec.as_str()], Some(&mut po))
+            .push(&[full_refspec.as_str()], Some(&mut po))
             .map_err(|e| {
                 let m = e.message().to_string();
                 if m.contains("authentication") || m.contains("credentials") || m.contains("401") || m.contains("403") {
                     format!("AUTH: {}", m)
+                } else if m.contains("non-fast") || m.contains("not present locally") || m.contains("rejected") {
+                    // Same phrasing the SSH path produces via map_git_err.
+                    "Push rejected (non-fast-forward). Fetch/pull first, then push again.".to_string()
                 } else {
                     m
                 }

@@ -78,12 +78,13 @@ pub fn create_branch(
     name: String,
     start_point: Option<String>,
     checkout: Option<bool>,
-) -> Result<(), String> {
-    let repo = open_repo(&state)?;
+    dirty: Option<String>,
+) -> Result<CheckoutOutcome, String> {
+    let mut repo = open_repo(&state)?;
     if name.trim().is_empty() {
         return Err("Branch name cannot be empty".into());
     }
-    let target = match start_point.as_ref().filter(|s| !s.is_empty()) {
+    let target_id = match start_point.as_ref().filter(|s| !s.is_empty()) {
         Some(sp) => repo
             .revparse_single(&sp)
             .and_then(|o| o.peel_to_commit())
@@ -92,16 +93,37 @@ pub fn create_branch(
             .head()
             .and_then(|h| h.peel_to_commit())
             .map_err(|e| e.message().to_string())?,
-    };
-    let branch = repo
-        .branch(name.trim(), &target, false)
-        .map_err(|e| e.message().to_string())?;
+    }
+    .id();
+    let switching = checkout.unwrap_or(true);
+    let mode = dirty.as_deref().unwrap_or("ask");
+    let same_tip = repo.head().ok().and_then(|h| h.target()) == Some(target_id);
+
+    // Prompt before creating anything when the switch would carry dirty work
+    // to a different tip. Same-tip checkouts can't clobber, so they skip it.
+    if switching && mode == "ask" && !same_tip {
+        let n = dirty_count(&repo);
+        if n > 0 {
+            return Ok(CheckoutOutcome {
+                status: "dirty".into(),
+                dirty_files: n,
+                conflicts: vec![],
+            });
+        }
+    }
+
+    {
+        let target = repo
+            .find_commit(target_id)
+            .map_err(|e| e.message().to_string())?;
+        repo.branch(name.trim(), &target, false)
+            .map_err(|e| e.message().to_string())?;
+    }
 
     // If start point was a remote branch, set upstream.
     if let Some(sp) = start_point.as_ref().filter(|s| !s.is_empty()) {
         if let Ok(rb) = repo.find_branch(&sp, BranchType::Remote) {
             if let Ok(Some(upname)) = rb.name() {
-                let _ = branch.into_reference();
                 if let Ok(mut b) = repo.find_branch(name.trim(), BranchType::Local) {
                     let _ = b.set_upstream(Some(&upname));
                 }
@@ -109,20 +131,47 @@ pub fn create_branch(
         }
     }
 
-    if checkout.unwrap_or(true) {
-        checkout_branch_inner(&repo, name.trim())?;
+    if switching {
+        let undo = head_point(&repo, &format!("Checkout new branch {}", name.trim()), false);
+        let out = if same_tip || mode == "ask" {
+            // Same tip → the checkout can't clobber dirty work; "ask" already
+            // handled the different-tip dirty case above — plain safe checkout.
+            checkout_branch_inner(&repo, name.trim())?;
+            lfs_checkout(&repo);
+            outcome("ok")
+        } else {
+            dirty_checkout(&mut repo, mode, |r| {
+                let res = checkout_branch_inner(r, name.trim());
+                if res.is_ok() {
+                    lfs_checkout(r);
+                }
+                res
+            })?
+        };
+        if out.status != "dirty" {
+            record_undo(&state, undo);
+        }
+        return Ok(out);
     }
-    Ok(())
+    Ok(outcome("ok"))
 }
 
 fn checkout_branch_inner(repo: &git2::Repository, name: &str) -> Result<(), String> {
     // Local branch?
     if let Ok(b) = repo.find_branch(name, BranchType::Local) {
         let refname = b.get().name().ok_or("invalid ref")?.to_string();
-        repo.set_head(&refname).map_err(|e| e.message().to_string())?;
+        let target = b
+            .get()
+            .peel_to_commit()
+            .map_err(|e| e.message().to_string())?;
+        // Branch switch = checkout_tree(target) then move HEAD — doing it the
+        // other way (set_head + checkout_head) makes every file look dirty
+        // relative to the new HEAD, so a safe checkout silently skips it.
         let mut cb = git2::build::CheckoutBuilder::new();
         cb.safe();
-        return repo.checkout_head(Some(&mut cb)).map_err(|e| e.message().to_string());
+        repo.checkout_tree(target.as_object(), Some(&mut cb))
+            .map_err(|e| e.message().to_string())?;
+        return repo.set_head(&refname).map_err(|e| e.message().to_string());
     }
     // Remote branch like "origin/foo" -> create local tracking branch
     if let Ok(rb) = repo.find_branch(name, BranchType::Remote) {
@@ -140,21 +189,46 @@ fn checkout_branch_inner(repo: &git2::Repository, name: &str) -> Result<(), Stri
                 .map_err(|e| e.message().to_string())?;
             let _ = lb.set_upstream(Some(name));
         }
-        let refname = format!("refs/heads/{}", local_name);
-        repo.set_head(&refname).map_err(|e| e.message().to_string())?;
+        let lb = repo
+            .find_branch(&local_name, BranchType::Local)
+            .map_err(|e| e.message().to_string())?;
+        let refname = lb.get().name().ok_or("invalid ref")?.to_string();
+        let target = lb
+            .get()
+            .peel_to_commit()
+            .map_err(|e| e.message().to_string())?;
         let mut cb = git2::build::CheckoutBuilder::new();
         cb.safe();
-        return repo.checkout_head(Some(&mut cb)).map_err(|e| e.message().to_string());
+        repo.checkout_tree(target.as_object(), Some(&mut cb))
+            .map_err(|e| e.message().to_string())?;
+        return repo.set_head(&refname).map_err(|e| e.message().to_string());
     }
     Err(format!("Branch '{}' not found", name))
 }
 
+/// `dirty`: "ask" (default — report `status:"dirty"` instead of switching when
+/// the worktree isn't clean), "carry" (take the changes to the target branch),
+/// or "stash" (stash them on the current branch, then switch).
 #[tauri::command]
-pub fn checkout_branch(state: State<AppState>, name: String) -> Result<(), String> {
-    let repo = open_repo(&state)?;
-    checkout_branch_inner(&repo, &name)?;
-    lfs_checkout(&repo);
-    Ok(())
+pub fn checkout_branch(
+    state: State<AppState>,
+    name: String,
+    dirty: Option<String>,
+) -> Result<CheckoutOutcome, String> {
+    let mut repo = open_repo(&state)?;
+    let mode = dirty.as_deref().unwrap_or("ask");
+    let undo = head_point(&repo, &format!("Checkout {}", name), false);
+    let out = dirty_checkout(&mut repo, mode, |r| {
+        let res = checkout_branch_inner(r, &name);
+        if res.is_ok() {
+            lfs_checkout(r);
+        }
+        res
+    })?;
+    if out.status != "dirty" {
+        record_undo(&state, undo);
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -187,23 +261,40 @@ pub fn rename_branch(state: State<AppState>, old: String, new: String) -> Result
 }
 
 #[tauri::command]
-pub fn merge_branch(state: State<AppState>, name: String) -> Result<MergeResult, String> {
-    let repo = open_repo(&state)?;
-    let branch = repo
-        .find_branch(&name, BranchType::Local)
-        .or_else(|_| repo.find_branch(&name, BranchType::Remote))
-        .map_err(|_| format!("Branch '{}' not found", name))?;
-    let annotated = repo
-        .reference_to_annotated_commit(branch.get())
-        .map_err(|e| e.message().to_string())?;
-    merge_annotated(&repo, &annotated, &format!("branch '{}'", name))
+pub fn merge_branch(
+    state: State<AppState>,
+    name: String,
+    dirty: Option<String>,
+) -> Result<CheckoutOutcome, String> {
+    let mut repo = open_repo(&state)?;
+    let oid = {
+        let branch = repo
+            .find_branch(&name, BranchType::Local)
+            .or_else(|_| repo.find_branch(&name, BranchType::Remote))
+            .map_err(|_| format!("Branch '{}' not found", name))?;
+        repo.reference_to_annotated_commit(branch.get())
+            .map_err(|e| e.message().to_string())?
+            .id()
+    };
+    let mode = dirty.as_deref().unwrap_or("ask");
+    let undo = head_point(&repo, &format!("Merge {}", name), false);
+    let out = merge_dirty_op(&mut repo, oid, &format!("branch '{}'", name), mode)?;
+    if out.status != "dirty" && out.status != "up_to_date" {
+        record_undo(&state, undo);
+    }
+    Ok(out)
 }
 
 #[tauri::command]
 pub fn abort_merge(state: State<AppState>) -> Result<(), String> {
     let repo = open_repo(&state)?;
-    // A CLI-started rebase (drag-drop reorder/squash) must be aborted via git.
-    if matches!(
+    let dir = repo_dir(&repo).to_path_buf();
+    // Rebase-family states need `rebase --abort` to restore ORIG_HEAD.
+    // Everything else (merge/cherry-pick/revert conflicts, stash-apply
+    // conflicts) goes through `reset --merge`: it reverts conflicted and
+    // op-touched files to HEAD while preserving unrelated dirty work —
+    // the old checkout_head(force) was `reset --hard` and wiped it all.
+    let args: &[&str] = if matches!(
         repo.state(),
         git2::RepositoryState::Rebase
             | git2::RepositoryState::RebaseInteractive
@@ -211,21 +302,18 @@ pub fn abort_merge(state: State<AppState>) -> Result<(), String> {
             | git2::RepositoryState::ApplyMailbox
             | git2::RepositoryState::ApplyMailboxOrRebase
     ) {
-        let dir = repo_dir(&repo).to_path_buf();
-        let st = std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(["rebase", "--abort"])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !st.status.success() {
-            return Err(String::from_utf8_lossy(&st.stderr).trim().to_string());
-        }
-        return Ok(());
+        &["rebase", "--abort"]
+    } else {
+        &["reset", "--merge"]
+    };
+    let st = std::process::Command::new("git")
+        .current_dir(&dir)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !st.status.success() {
+        return Err(String::from_utf8_lossy(&st.stderr).trim().to_string());
     }
-    let mut cb = git2::build::CheckoutBuilder::new();
-    cb.force();
-    repo.checkout_head(Some(&mut cb))
-        .map_err(|e| e.message().to_string())?;
     repo.cleanup_state().map_err(|e| e.message().to_string())?;
     Ok(())
 }
@@ -306,10 +394,12 @@ END {
         Some(p) => cmd.args(["rebase", "-i", "--rebase-merges", &p]),
         None => cmd.args(["rebase", "-i", "--rebase-merges", "--root"]),
     };
+    let undo = head_point(&repo, "Rebase commits", false);
     let out = cmd.output().map_err(|e| format!("git not found: {}", e))?;
     let _ = std::fs::remove_file(&script_path);
 
     if out.status.success() {
+        record_undo(&state, undo);
         lfs_checkout(&repo);
         return Ok(MergeResult {
             status: "merged".into(),
@@ -318,6 +408,7 @@ END {
     }
     // Rebase may have stopped on a conflict — leave state for resolve/abort flow.
     if !matches!(repo.state(), git2::RepositoryState::Clean) {
+        record_undo(&state, undo);
         return Ok(MergeResult {
             status: "conflicts".into(),
             conflicts: conflicts_list(&repo),
@@ -326,22 +417,16 @@ END {
     Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
 }
 
-#[tauri::command]
-pub fn rebase_branch(state: State<AppState>, onto: String) -> Result<MergeResult, String> {
-    let repo = open_repo(&state)?;
-    let onto_ref = repo
-        .find_branch(&onto, BranchType::Local)
-        .or_else(|_| repo.find_branch(&onto, BranchType::Remote))
-        .map_err(|_| format!("Branch '{}' not found", onto))?;
+fn rebase_onto(repo: &git2::Repository, onto_oid: git2::Oid) -> Result<CheckoutOutcome, String> {
     let onto_ann = repo
-        .reference_to_annotated_commit(onto_ref.get())
+        .find_annotated_commit(onto_oid)
         .map_err(|e| e.message().to_string())?;
     let head_ann = repo
         .head()
         .and_then(|h| repo.reference_to_annotated_commit(&h))
         .map_err(|e| e.message().to_string())?;
 
-    let signature = sig(&repo)?;
+    let signature = sig(repo)?;
     let mut opts = git2::RebaseOptions::new();
     let mut cb = git2::build::CheckoutBuilder::new();
     cb.safe();
@@ -357,8 +442,9 @@ pub fn rebase_branch(state: State<AppState>, onto: String) -> Result<MergeResult
             Ok(_) => {}
             Err(e) => {
                 let _ = rebase.abort();
-                return Ok(MergeResult {
+                return Ok(CheckoutOutcome {
                     status: "conflicts".into(),
+                    dirty_files: 0,
                     conflicts: vec![format!(
                         "Rebase stopped on conflict and was aborted: {}",
                         e.message()
@@ -368,8 +454,46 @@ pub fn rebase_branch(state: State<AppState>, onto: String) -> Result<MergeResult
         }
     }
     rebase.finish(None).map_err(|e| e.message().to_string())?;
-    Ok(MergeResult {
-        status: "merged".into(),
-        conflicts: vec![],
-    })
+    Ok(outcome("merged"))
+}
+
+#[tauri::command]
+pub fn rebase_branch(
+    state: State<AppState>,
+    onto: String,
+    dirty: Option<String>,
+) -> Result<CheckoutOutcome, String> {
+    let mut repo = open_repo(&state)?;
+    let onto_oid = {
+        let onto_ref = repo
+            .find_branch(&onto, BranchType::Local)
+            .or_else(|_| repo.find_branch(&onto, BranchType::Remote))
+            .map_err(|_| format!("Branch '{}' not found", onto))?;
+        repo.reference_to_annotated_commit(onto_ref.get())
+            .map_err(|e| e.message().to_string())?
+            .id()
+    };
+    let mode = dirty.as_deref().unwrap_or("ask");
+    let undo = head_point(&repo, &format!("Rebase onto {}", onto), false);
+    // `git rebase` refuses on any dirty file, not just touched ones.
+    let out = match mode {
+        "carry" => stash_wrap_op(&mut repo, |r| rebase_onto(r, onto_oid)),
+        "stash" => stash_keep_op(&mut repo, |r| rebase_onto(r, onto_oid)),
+        "ask" => {
+            let n = dirty_count(&repo);
+            if n > 0 {
+                return Ok(CheckoutOutcome {
+                    status: "dirty".into(),
+                    dirty_files: n,
+                    conflicts: vec![],
+                });
+            }
+            rebase_onto(&repo, onto_oid)
+        }
+        other => Err(format!("Unknown dirty mode '{}'", other)),
+    }?;
+    if out.status != "up_to_date" {
+        record_undo(&state, undo);
+    }
+    Ok(out)
 }

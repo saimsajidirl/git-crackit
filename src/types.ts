@@ -38,6 +38,7 @@ export interface CommitInfo {
   committer_time: number;
   parents: string[];
   refs: RefLabel[];
+  signed: boolean;
 }
 
 export interface ChangedFile {
@@ -51,6 +52,12 @@ export interface ChangedFile {
 export interface CommitDetail {
   commit: CommitInfo;
   files: ChangedFile[];
+}
+
+export interface CompareResult {
+  files: ChangedFile[];
+  ahead: number;
+  behind: number;
 }
 
 export interface DiffLine {
@@ -118,6 +125,12 @@ export interface TagInfo {
   time: number;
 }
 
+export interface CheckoutOutcome {
+  status: "ok" | "dirty" | "conflicts" | string;
+  dirty_files: number;
+  conflicts: string[];
+}
+
 export interface MergeResult {
   status: "up_to_date" | "fast_forward" | "merged" | "conflicts" | "unborn" | string;
   conflicts: string[];
@@ -154,6 +167,9 @@ export interface ImageDiff {
 export interface GitConfigInfo {
   name: string | null;
   email: string | null;
+  gpgsign: boolean;
+  signingkey: string | null;
+  gpgformat: string;
 }
 
 export interface RecentRepos {

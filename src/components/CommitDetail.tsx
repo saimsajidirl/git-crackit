@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { memo, useEffect, useState } from "react";
 import type { CommitDetail, FileDiff } from "../types";
 import { api } from "../api";
 import { Icon } from "../icons";
@@ -6,7 +6,7 @@ import { Avatar } from "./Avatar";
 import { DiffView, DiffEmpty } from "./DiffView";
 import { cx, fileName, dirName, formatDate, statusLetter } from "../util";
 
-export function CommitDetailView({
+export const CommitDetailView = memo(function CommitDetailView({
   detail,
   onError,
 }: {
@@ -57,6 +57,11 @@ export function CommitDetailView({
                 <span className="stat-add">+{totalAdd}</span>
                 <span className="stat-del">−{totalDel}</span>
               </span>
+              {c.signed && (
+                <span className="meta-chip sig-chip" title="GPG/SSH-signed commit">
+                  <Icon name="check" size={11} /> Signed
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -98,4 +103,4 @@ export function CommitDetailView({
       </div>
     </div>
   );
-}
+});
